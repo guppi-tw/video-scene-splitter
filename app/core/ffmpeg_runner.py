@@ -8,6 +8,47 @@ from typing import Callable, Optional
 import platform
 
 
+def get_bundled_ffmpeg_path() -> Optional[Path]:
+    """
+    同梱されたffmpegバイナリのパスを取得
+    
+    Returns:
+        ffmpegバイナリのパス、存在しない場合はNone
+    """
+    # プロジェクトルートを探す
+    # app/core/ffmpeg_runner.py -> app/core -> app -> project_root
+    current = Path(__file__).resolve()
+    project_root = current.parent.parent.parent
+    
+    system = platform.system()
+    if system == "Windows":
+        ffmpeg_name = "ffmpeg.exe"
+    else:
+        ffmpeg_name = "ffmpeg"
+    
+    # vendor/ffmpeg/ を確認
+    vendor_path = project_root / "vendor" / "ffmpeg" / ffmpeg_name
+    if vendor_path.exists():
+        return vendor_path
+    
+    # PyInstallerでビルドされた場合のパス
+    import sys
+    if getattr(sys, 'frozen', False):
+        # 実行ファイルと同じディレクトリ
+        bundle_dir = Path(sys.executable).parent
+        bundled = bundle_dir / "ffmpeg" / ffmpeg_name
+        if bundled.exists():
+            return bundled
+        # _MEIPASSディレクトリ（PyInstaller一時展開先）
+        if hasattr(sys, '_MEIPASS'):
+            meipass = Path(sys._MEIPASS)
+            bundled = meipass / "ffmpeg" / ffmpeg_name
+            if bundled.exists():
+                return bundled
+    
+    return None
+
+
 class FFmpegRunner:
     """ffmpeg操作クラス"""
     
@@ -17,22 +58,47 @@ class FFmpegRunner:
         self._cancelled = False
     
     def _find_ffmpeg(self) -> str:
-        """ffmpegのパスを探す"""
+        """
+        ffmpegのパスを探す
+        
+        優先順位:
+        1. 同梱バイナリ (vendor/ffmpeg/)
+        2. システムPATH
+        3. Windows一般的なパス
+        """
+        # 1. 同梱バイナリを確認
+        bundled = get_bundled_ffmpeg_path()
+        if bundled:
+            return str(bundled)
+        
+        # 2. システムPATHから探す
         ffmpeg = shutil.which("ffmpeg")
         if ffmpeg:
             return ffmpeg
         
-        # Windows用の一般的なパス
+        # 3. Windows用の一般的なパス
         if platform.system() == "Windows":
             common_paths = [
                 Path("C:/ffmpeg/bin/ffmpeg.exe"),
                 Path("C:/Program Files/ffmpeg/bin/ffmpeg.exe"),
+                Path.home() / "ffmpeg" / "bin" / "ffmpeg.exe",
             ]
             for p in common_paths:
                 if p.exists():
                     return str(p)
         
-        raise RuntimeError("ffmpegが見つかりません。PATHに追加してください。")
+        raise RuntimeError(
+            "ffmpegが見つかりません。\n"
+            "以下のいずれかを実行してください:\n"
+            "1. python scripts/setup_ffmpeg.py を実行してffmpegをダウンロード\n"
+            "2. ffmpegをインストールしてPATHに追加"
+        )
+    
+    @property
+    def is_bundled(self) -> bool:
+        """同梱バイナリを使用しているかどうか"""
+        bundled = get_bundled_ffmpeg_path()
+        return bundled is not None and str(bundled) == self.ffmpeg_path
     
     def cancel(self):
         """現在の処理をキャンセル"""

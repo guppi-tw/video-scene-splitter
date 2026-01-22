@@ -116,3 +116,9 @@ Thumbs.db
 *.png
 output/
 temp/
+
+# Vendor binaries (downloaded by setup script)
+vendor/ffmpeg/ffmpeg
+vendor/ffmpeg/ffmpeg.exe
+vendor/ffmpeg/ffprobe
+vendor/ffmpeg/ffprobe.exe
