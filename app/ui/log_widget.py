@@ -1,7 +1,10 @@
 """
 ログ表示ウィジェット
 """
-from PySide6.QtWidgets import QWidget, QVBoxLayout, QTextEdit, QLabel, QHBoxLayout
+from PySide6.QtWidgets import (
+    QWidget, QVBoxLayout, QTextEdit, QLabel, 
+    QHBoxLayout, QProgressBar
+)
 from PySide6.QtCore import Qt
 
 
@@ -30,6 +33,21 @@ class LogWidget(QWidget):
         
         layout.addLayout(status_layout)
         
+        # プログレスバー
+        self.progress_bar = QProgressBar()
+        self.progress_bar.setRange(0, 100)
+        self.progress_bar.setValue(0)
+        self.progress_bar.setTextVisible(True)
+        self.progress_bar.setFormat("%p% (%v / %m)")
+        self.progress_bar.hide()  # 初期状態では非表示
+        layout.addWidget(self.progress_bar)
+        
+        # 詳細進捗ラベル
+        self.detail_label = QLabel("")
+        self.detail_label.setStyleSheet("color: #666; font-size: 11px;")
+        self.detail_label.hide()
+        layout.addWidget(self.detail_label)
+        
         # ログテキスト
         self.log_text = QTextEdit()
         self.log_text.setReadOnly(True)
@@ -49,8 +67,41 @@ class LogWidget(QWidget):
         self.status_label.setText(status)
     
     def set_progress(self, progress: str):
-        """進捗を設定"""
+        """進捗テキストを設定"""
         self.progress_label.setText(progress)
+    
+    def set_progress_bar(self, current: int, total: int, show: bool = True):
+        """プログレスバーを更新"""
+        if show:
+            self.progress_bar.show()
+            self.progress_bar.setRange(0, total)
+            self.progress_bar.setValue(current)
+            self.progress_bar.setFormat(f"%p% ({current:,} / {total:,})")
+        else:
+            self.progress_bar.hide()
+    
+    def set_progress_percent(self, percent: float, show: bool = True):
+        """プログレスバーをパーセント表示で更新"""
+        if show:
+            self.progress_bar.show()
+            self.progress_bar.setRange(0, 100)
+            self.progress_bar.setValue(int(percent))
+            self.progress_bar.setFormat(f"{percent:.1f}%")
+        else:
+            self.progress_bar.hide()
+    
+    def set_detail(self, detail: str, show: bool = True):
+        """詳細進捗を設定"""
+        if show and detail:
+            self.detail_label.setText(detail)
+            self.detail_label.show()
+        else:
+            self.detail_label.hide()
+    
+    def hide_progress(self):
+        """プログレスバーと詳細を非表示"""
+        self.progress_bar.hide()
+        self.detail_label.hide()
     
     def append_log(self, message: str):
         """ログを追加"""

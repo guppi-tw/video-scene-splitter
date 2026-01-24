@@ -18,18 +18,30 @@ class ProcessingWorker(QObject):
     
     # シグナル定義
     progress = Signal(str)  # 進捗メッセージ
+    frame_progress = Signal(int, int, float)  # フレーム進捗 (current, total, percent)
     scene_detected = Signal(object)  # シーン検知完了 (VideoJob)
+    thumbnail_progress = Signal(int, int)  # サムネイル進捗 (current, total)
     thumbnail_generated = Signal(int, str)  # サムネイル生成完了 (scene_index, path)
     processing_complete = Signal(object)  # 処理完了 (VideoJob)
     error = Signal(str)  # エラー
     
-    def __init__(self, job: VideoJob, temp_dir: Path):
+    def __init__(
+        self,
+        job: VideoJob,
+        temp_dir: Path,
+        threshold: float = 27.0,
+        min_scene_len_sec: float = 2.0
+    ):
         super().__init__()
         self.job = job
         self.temp_dir = temp_dir
         self._cancelled = False
         
-        self.scene_detector = SceneDetectRunner()
+        # 設定を反映したシーン検知器を作成
+        self.scene_detector = SceneDetectRunner(
+            threshold=threshold,
+            min_scene_len_sec=min_scene_len_sec
+        )
         self.ffmpeg = FFmpegRunner()
     
     def cancel(self):
@@ -47,7 +59,8 @@ class ProcessingWorker(QObject):
             self.progress.emit("シーン検知中...")
             scenes = self.scene_detector.detect_scenes(
                 self.job.source_path,
-                progress_callback=lambda msg: self.progress.emit(msg)
+                progress_callback=lambda msg: self.progress.emit(msg),
+                frame_progress_callback=self._on_frame_progress
             )
             
             if self._cancelled:
@@ -62,10 +75,14 @@ class ProcessingWorker(QObject):
             thumb_dir = self.temp_dir / f"job_{self.job.id}"
             thumb_dir.mkdir(parents=True, exist_ok=True)
             
-            for scene in scenes:
+            total_scenes = len(scenes)
+            for i, scene in enumerate(scenes):
                 if self._cancelled:
                     self.progress.emit("キャンセルされました")
                     return
+                
+                # 進捗を報告
+                self.thumbnail_progress.emit(i + 1, total_scenes)
                 
                 # シーン開始+2秒の位置（暗転回避）
                 thumb_time = scene.start_time + 2.0
@@ -93,12 +110,17 @@ class ProcessingWorker(QObject):
             self.job.status = JobStatus.ERROR
             self.job.error_message = str(e)
             self.error.emit(f"エラー: {str(e)}")
+    
+    def _on_frame_progress(self, current: int, total: int, percent: float):
+        """フレーム進捗コールバック"""
+        self.frame_progress.emit(current, total, percent)
 
 
 class ExportWorker(QObject):
     """書き出しワーカー"""
     
     progress = Signal(str)
+    clip_progress = Signal(int, int)  # クリップ進捗 (current, total)
     export_complete = Signal(object)  # VideoJob
     error = Signal(str)
     
@@ -120,18 +142,61 @@ class ExportWorker(QObject):
         try:
             self.progress.emit(f"書き出し開始: {self.job.filename}")
             
-            success = self.exporter.export(
-                self.job,
-                self.output_dir,
-                progress_callback=lambda msg: self.progress.emit(msg)
-            )
+            # クリップを計算
+            clips = self.exporter.calculate_clips(self.job)
+            if not clips:
+                self.progress.emit("書き出し対象のシーンがありません")
+                self.job.status = JobStatus.ERROR
+                self.job.error_message = "書き出し対象のシーンがありません"
+                self.export_complete.emit(self.job)
+                return
             
-            if success:
+            self.job.clips = clips
+            total_clips = len(clips)
+            
+            # 出力ディレクトリを作成
+            folder_name = self.job.get_output_folder_name()
+            output_dir = self.output_dir / folder_name
+            output_dir.mkdir(parents=True, exist_ok=True)
+            self.job.output_dir = output_dir
+            
+            self.progress.emit(f"出力先: {output_dir}")
+            self.progress.emit(f"クリップ数: {total_clips}")
+            
+            # 各クリップを書き出し
+            success_count = 0
+            for i, clip in enumerate(clips):
+                if self._cancelled:
+                    self.progress.emit("キャンセルされました")
+                    return
+                
+                self.clip_progress.emit(i + 1, total_clips)
+                self.progress.emit(f"書き出し中: {i + 1}/{total_clips}")
+                
+                filename = self.job.get_clip_filename(clip)
+                output_path = output_dir / filename
+                clip.output_path = output_path
+                
+                success = self.ffmpeg.extract_clip(
+                    video_path=self.job.source_path,
+                    start_time=clip.start_time,
+                    end_time=clip.end_time,
+                    output_path=output_path,
+                    use_copy=True,
+                    progress_callback=lambda msg: self.progress.emit(msg)
+                )
+                
+                if success:
+                    success_count += 1
+                else:
+                    self.progress.emit(f"警告: クリップ {clip.index} の書き出しに失敗")
+            
+            if success_count > 0:
                 self.job.status = JobStatus.DONE
-                self.progress.emit("書き出し完了")
+                self.progress.emit(f"書き出し完了: {success_count}/{total_clips} クリップ")
             else:
                 self.job.status = JobStatus.ERROR
-                self.job.error_message = "書き出しに失敗しました"
+                self.job.error_message = "すべてのクリップの書き出しに失敗しました"
                 self.progress.emit("書き出し失敗")
             
             self.export_complete.emit(self.job)

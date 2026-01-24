@@ -14,6 +14,7 @@ from ..core import JobQueue, VideoJob, JobStatus
 from .queue_widget import QueueWidget
 from .review_widget import ReviewWidget
 from .log_widget import LogWidget
+from .settings_widget import SettingsWidget
 from .workers import ProcessingWorker, ExportWorker
 
 
@@ -43,16 +44,20 @@ class MainWindow(QMainWindow):
         
         main_layout = QVBoxLayout(central)
         
-        # メインスプリッター（左: キュー、右: レビュー）
+        # メインスプリッター（左: キュー+設定、右: レビュー）
         splitter = QSplitter(Qt.Horizontal)
         
-        # 左側: キュー
+        # 左側: キュー + 設定
         left_widget = QWidget()
         left_layout = QVBoxLayout(left_widget)
         left_layout.setContentsMargins(0, 0, 0, 0)
         
         self.queue_widget = QueueWidget(self.job_queue)
         left_layout.addWidget(self.queue_widget)
+        
+        # 設定ウィジェット
+        self.settings_widget = SettingsWidget()
+        left_layout.addWidget(self.settings_widget)
         
         # 停止ボタン
         self.btn_stop = QPushButton("処理停止")
@@ -99,17 +104,29 @@ class MainWindow(QMainWindow):
         
         self.log_widget.clear_log()
         self.log_widget.set_status(f"処理中: {job.filename}")
+        self.log_widget.hide_progress()
         self.btn_stop.setEnabled(True)
+        
+        # 設定から閾値と最小シーン長を取得
+        threshold = self.settings_widget.threshold
+        min_scene_len_sec = self.settings_widget.min_scene_len_sec
         
         # ワーカーとスレッドを作成
         self.processing_thread = QThread()
-        self.processing_worker = ProcessingWorker(job, self.temp_dir)
+        self.processing_worker = ProcessingWorker(
+            job,
+            self.temp_dir,
+            threshold=threshold,
+            min_scene_len_sec=min_scene_len_sec
+        )
         self.processing_worker.moveToThread(self.processing_thread)
         
         # シグナル接続
         self.processing_thread.started.connect(self.processing_worker.run)
         self.processing_worker.progress.connect(self._on_progress)
+        self.processing_worker.frame_progress.connect(self._on_frame_progress)
         self.processing_worker.scene_detected.connect(self._on_scene_detected)
+        self.processing_worker.thumbnail_progress.connect(self._on_thumbnail_progress)
         self.processing_worker.thumbnail_generated.connect(self._on_thumbnail_generated)
         self.processing_worker.processing_complete.connect(self._on_processing_complete)
         self.processing_worker.error.connect(self._on_error)
@@ -130,6 +147,20 @@ class MainWindow(QMainWindow):
         """進捗更新"""
         self.log_widget.append_log(message)
     
+    def _on_frame_progress(self, current: int, total: int, percent: float):
+        """フレーム進捗更新"""
+        self.log_widget.set_progress_bar(current, total)
+        self.log_widget.set_detail(
+            f"シーン検知中: {current:,} / {total:,} フレーム ({percent:.1f}%)"
+        )
+    
+    def _on_thumbnail_progress(self, current: int, total: int):
+        """サムネイル進捗更新"""
+        self.log_widget.set_progress_bar(current, total)
+        self.log_widget.set_detail(
+            f"サムネイル生成中: {current} / {total}"
+        )
+    
     def _on_scene_detected(self, job: VideoJob):
         """シーン検知完了"""
         self.log_widget.set_progress(f"{len(job.scenes)}シーン検出")
@@ -143,6 +174,7 @@ class MainWindow(QMainWindow):
     def _on_processing_complete(self, job: VideoJob):
         """処理完了"""
         self.log_widget.set_status("レビュー待ち")
+        self.log_widget.hide_progress()
         self.btn_stop.setEnabled(False)
         
         # スレッドをクリーンアップ
@@ -160,6 +192,7 @@ class MainWindow(QMainWindow):
             self,
             "処理完了",
             f"{job.filename} のシーン検知が完了しました。\n"
+            f"検出シーン数: {len(job.scenes)}\n\n"
             f"レビューして書き出しを行ってください。"
         )
     
@@ -167,6 +200,7 @@ class MainWindow(QMainWindow):
         """エラー発生"""
         self.log_widget.append_log(f"[ERROR] {message}")
         self.log_widget.set_status("エラー")
+        self.log_widget.hide_progress()
         self.btn_stop.setEnabled(False)
         
         # スレッドをクリーンアップ
@@ -198,6 +232,7 @@ class MainWindow(QMainWindow):
         
         self.log_widget.clear_log()
         self.log_widget.set_status(f"書き出し中: {job.filename}")
+        self.log_widget.hide_progress()
         self.btn_stop.setEnabled(True)
         
         # ワーカーとスレッドを作成
@@ -208,14 +243,23 @@ class MainWindow(QMainWindow):
         # シグナル接続
         self.export_thread.started.connect(self.export_worker.run)
         self.export_worker.progress.connect(self._on_progress)
+        self.export_worker.clip_progress.connect(self._on_clip_progress)
         self.export_worker.export_complete.connect(self._on_export_complete)
         self.export_worker.error.connect(self._on_error)
         
         self.export_thread.start()
     
+    def _on_clip_progress(self, current: int, total: int):
+        """クリップ進捗更新"""
+        self.log_widget.set_progress_bar(current, total)
+        self.log_widget.set_detail(
+            f"書き出し中: {current} / {total} クリップ"
+        )
+    
     def _on_export_complete(self, job: VideoJob):
         """書き出し完了"""
         self.log_widget.set_status("書き出し完了")
+        self.log_widget.hide_progress()
         self.btn_stop.setEnabled(False)
         
         # スレッドをクリーンアップ
@@ -232,7 +276,8 @@ class MainWindow(QMainWindow):
                 self,
                 "書き出し完了",
                 f"{job.filename} の書き出しが完了しました。\n"
-                f"出力先: {job.output_dir}"
+                f"出力先: {job.output_dir}\n"
+                f"クリップ数: {len(job.clips)}"
             )
         
         # 次の待機ジョブを処理

@@ -5,6 +5,7 @@ from .workers import ProcessingWorker, ExportWorker
 from .queue_widget import QueueWidget
 from .review_widget import ReviewWidget
 from .log_widget import LogWidget
+from .settings_widget import SettingsWidget
 from .main_window import MainWindow
 
 __all__ = [
