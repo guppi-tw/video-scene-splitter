@@ -2,7 +2,8 @@
 分割・書き出し処理
 """
 from pathlib import Path
-from typing import Callable, Optional
+from typing import Callable, Optional, List, Tuple
+from datetime import date
 
 from app.core.jobs import VideoJob, Scene, Clip
 from app.core.ffmpeg_runner import FFmpegRunner
@@ -21,16 +22,38 @@ class Exporter:
         """
         keepシーンからクリップを計算
         595秒超のシーンは分割、短い余りは前に吸収
+        シーンごとのメタデータを考慮してグループ化
+        """
+        all_clips = []
+        
+        # メタデータでグループ化されたシーンを取得
+        groups = job.get_scenes_grouped_by_metadata()
+        
+        for event_name, event_date, scenes in groups:
+            # グループ内でクリップを生成
+            group_clips = self._calculate_clips_for_group(
+                scenes, event_name, event_date
+            )
+            all_clips.extend(group_clips)
+        
+        return all_clips
+    
+    def _calculate_clips_for_group(
+        self,
+        scenes: List[Scene],
+        event_name: str,
+        event_date: Optional[date]
+    ) -> List[Clip]:
+        """
+        同じメタデータを持つシーングループからクリップを計算
         """
         clips = []
         clip_index = 1
         
-        kept_scenes = job.kept_scenes
-        if not kept_scenes:
-            return clips
-        
-        for scene in kept_scenes:
-            scene_clips = self._split_scene_to_clips(scene, clip_index)
+        for scene in scenes:
+            scene_clips = self._split_scene_to_clips(
+                scene, clip_index, event_name, event_date
+            )
             clips.extend(scene_clips)
             clip_index += len(scene_clips)
         
@@ -43,7 +66,13 @@ class Exporter:
         
         return clips
     
-    def _split_scene_to_clips(self, scene: Scene, start_index: int) -> list[Clip]:
+    def _split_scene_to_clips(
+        self,
+        scene: Scene,
+        start_index: int,
+        event_name: str,
+        event_date: Optional[date]
+    ) -> list[Clip]:
         """シーンを595秒単位で分割"""
         clips = []
         current_start = scene.start_time
@@ -58,7 +87,9 @@ class Exporter:
                     index=current_index,
                     start_time=current_start,
                     end_time=scene.end_time,
-                    source_scene_indices=[scene.index]
+                    source_scene_indices=[scene.index],
+                    event_name=event_name,
+                    event_date=event_date
                 )
                 clips.append(clip)
                 break
@@ -68,7 +99,9 @@ class Exporter:
                     index=current_index,
                     start_time=current_start,
                     end_time=current_start + self.MAX_CLIP_DURATION,
-                    source_scene_indices=[scene.index]
+                    source_scene_indices=[scene.index],
+                    event_name=event_name,
+                    event_date=event_date
                 )
                 clips.append(clip)
                 current_start += self.MAX_CLIP_DURATION
@@ -128,42 +161,65 @@ class Exporter:
         
         job.clips = clips
         
-        # 出力ディレクトリを作成
-        folder_name = job.get_output_folder_name()
-        output_dir = output_base_dir / folder_name
-        output_dir.mkdir(parents=True, exist_ok=True)
-        job.output_dir = output_dir
+        # メタデータでグループ化して出力
+        # 同じメタデータのクリップは同じフォルダに出力
+        clips_by_metadata = self._group_clips_by_metadata(clips)
         
-        if progress_callback:
-            progress_callback(f"出力先: {output_dir}")
-            progress_callback(f"クリップ数: {len(clips)}")
-        
-        # 各クリップを書き出し
+        total_clips = len(clips)
         success_count = 0
-        for i, clip in enumerate(clips):
+        current_clip_num = 0
+        
+        for (event_name, event_date), group_clips in clips_by_metadata.items():
+            # 出力ディレクトリを作成
+            folder_name = job.get_output_folder_name(event_name, event_date)
+            output_dir = output_base_dir / folder_name
+            output_dir.mkdir(parents=True, exist_ok=True)
+            
             if progress_callback:
-                progress_callback(f"書き出し中: {i + 1}/{len(clips)}")
+                progress_callback(f"出力先: {output_dir}")
             
-            filename = job.get_clip_filename(clip)
-            output_path = output_dir / filename
-            clip.output_path = output_path
-            
-            success = self.ffmpeg.extract_clip(
-                video_path=job.source_path,
-                start_time=clip.start_time,
-                end_time=clip.end_time,
-                output_path=output_path,
-                use_copy=True,
-                progress_callback=progress_callback
-            )
-            
-            if success:
-                success_count += 1
-            else:
+            # グループ内のクリップを書き出し
+            for clip in group_clips:
+                current_clip_num += 1
+                
                 if progress_callback:
-                    progress_callback(f"警告: クリップ {clip.index} の書き出しに失敗")
+                    progress_callback(f"書き出し中: {current_clip_num}/{total_clips}")
+                
+                filename = job.get_clip_filename(clip)
+                output_path = output_dir / filename
+                clip.output_path = output_path
+                
+                success = self.ffmpeg.extract_clip(
+                    video_path=job.source_path,
+                    start_time=clip.start_time,
+                    end_time=clip.end_time,
+                    output_path=output_path,
+                    use_copy=True,
+                    progress_callback=progress_callback
+                )
+                
+                if success:
+                    success_count += 1
+                else:
+                    if progress_callback:
+                        progress_callback(f"警告: クリップ {clip.index} の書き出しに失敗")
         
         if progress_callback:
-            progress_callback(f"書き出し完了: {success_count}/{len(clips)} クリップ")
+            progress_callback(f"書き出し完了: {success_count}/{total_clips} クリップ")
         
         return success_count > 0
+    
+    def _group_clips_by_metadata(
+        self,
+        clips: List[Clip]
+    ) -> dict[Tuple[str, Optional[date]], List[Clip]]:
+        """クリップをメタデータでグループ化"""
+        groups = {}
+        
+        for clip in clips:
+            key = (clip.event_name or "", clip.event_date)
+            if key not in groups:
+                groups[key] = []
+            groups[key].append(clip)
+        
+        return groups

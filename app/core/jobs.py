@@ -4,7 +4,7 @@
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
-from typing import Optional
+from typing import Optional, List, Tuple
 from datetime import date
 
 
@@ -24,11 +24,18 @@ class Scene:
     end_time: float    # 秒
     thumbnail_path: Optional[Path] = None
     keep: bool = True
-    title: str = ""
+    
+    # シーン別メタデータ（Noneの場合は前のシーンから引き継ぎ）
+    event_name: Optional[str] = None  # イベント名（Noneで引き継ぎ）
+    event_date: Optional[date] = None  # 日付（Noneで引き継ぎ）
     
     @property
     def duration(self) -> float:
         return self.end_time - self.start_time
+    
+    def has_metadata(self) -> bool:
+        """このシーンに独自のメタデータが設定されているか"""
+        return self.event_name is not None or self.event_date is not None
     
     def __str__(self) -> str:
         return f"Scene {self.index}: {self.start_time:.2f}s - {self.end_time:.2f}s ({self.duration:.2f}s)"
@@ -41,7 +48,8 @@ class Clip:
     start_time: float
     end_time: float
     source_scene_indices: list[int] = field(default_factory=list)
-    title: str = ""
+    event_name: str = ""  # このクリップのイベント名
+    event_date: Optional[date] = None  # このクリップの日付
     output_path: Optional[Path] = None
     
     @property
@@ -55,8 +63,11 @@ class VideoJob:
     id: int
     source_path: Path
     status: JobStatus = JobStatus.WAITING
-    event_name: str = ""
-    event_date: Optional[date] = None
+    
+    # デフォルトのメタデータ（シーンに設定がない場合に使用）
+    default_event_name: str = ""
+    default_event_date: Optional[date] = None
+    
     scenes: list[Scene] = field(default_factory=list)
     clips: list[Clip] = field(default_factory=list)
     output_dir: Optional[Path] = None
@@ -70,20 +81,103 @@ class VideoJob:
     def kept_scenes(self) -> list[Scene]:
         return [s for s in self.scenes if s.keep]
     
-    def get_output_folder_name(self) -> str:
+    def get_scene_metadata(self, scene_index: int) -> Tuple[str, Optional[date]]:
+        """
+        指定シーンの有効なメタデータを取得（引き継ぎを考慮）
+        
+        Returns:
+            (event_name, event_date)
+        """
+        current_name = self.default_event_name
+        current_date = self.default_event_date
+        
+        for scene in self.scenes:
+            if scene.index > scene_index:
+                break
+            
+            # シーンに設定があれば更新
+            if scene.event_name is not None:
+                current_name = scene.event_name
+            if scene.event_date is not None:
+                current_date = scene.event_date
+        
+        return current_name, current_date
+    
+    def get_scenes_grouped_by_metadata(self) -> List[Tuple[str, Optional[date], List['Scene']]]:
+        """
+        メタデータでグループ化されたシーンリストを取得
+        
+        Returns:
+            [(event_name, event_date, [scenes]), ...]
+        """
+        groups = []
+        current_name = self.default_event_name
+        current_date = self.default_event_date
+        current_scenes = []
+        
+        for scene in self.kept_scenes:
+            # メタデータが変わったら新しいグループを開始
+            scene_name, scene_date = self.get_scene_metadata(scene.index)
+            
+            if current_scenes and (scene_name != current_name or scene_date != current_date):
+                # 前のグループを保存
+                groups.append((current_name, current_date, current_scenes))
+                current_scenes = []
+            
+            current_name = scene_name
+            current_date = scene_date
+            current_scenes.append(scene)
+        
+        # 最後のグループを追加
+        if current_scenes:
+            groups.append((current_name, current_date, current_scenes))
+        
+        return groups
+    
+    def propagate_metadata_from_scene(self, scene_index: int):
+        """
+        指定シーンのメタデータを後続のシーンに伝播
+        （後続シーンに独自の設定がない場合のみ）
+        
+        これは主にUI側で使用し、ユーザーが入力した値を
+        視覚的に後続シーンに反映させるために使う
+        """
+        source_scene = None
+        for scene in self.scenes:
+            if scene.index == scene_index:
+                source_scene = scene
+                break
+        
+        if not source_scene:
+            return
+        
+        # 後続シーンで、独自の設定がないものに伝播
+        found_source = False
+        for scene in self.scenes:
+            if scene.index == scene_index:
+                found_source = True
+                continue
+            
+            if found_source:
+                # 後続シーンに独自の設定がある場合は伝播を停止
+                if scene.has_metadata():
+                    break
+    
+    def get_output_folder_name(self, event_name: str = None, event_date: date = None) -> str:
         """出力フォルダ名を生成"""
-        date_str = self.event_date.strftime("%Y-%m-%d") if self.event_date else "unknown"
-        event = self.event_name or "untitled"
-        return f"{date_str}_{event}"
+        name = event_name or self.default_event_name or "untitled"
+        d = event_date or self.default_event_date
+        date_str = d.strftime("%Y-%m-%d") if d else "unknown"
+        return f"{date_str}_{name}"
     
     def get_clip_filename(self, clip: Clip) -> str:
         """クリップファイル名を生成"""
-        date_str = self.event_date.strftime("%Y-%m-%d") if self.event_date else "unknown"
-        event = self.event_name or "untitled"
-        base = f"{date_str}_{event}_{clip.index:03d}"
-        if clip.title:
-            base += f"_{clip.title}"
-        return f"{base}.mp4"
+        name = clip.event_name or self.default_event_name or "untitled"
+        d = clip.event_date or self.default_event_date
+        date_str = d.strftime("%Y-%m-%d") if d else "unknown"
+        # ファイル名に使えない文字を置換
+        safe_name = "".join(c if c.isalnum() or c in "._- " else "_" for c in name)
+        return f"{date_str}_{safe_name}_{clip.index:03d}.mp4"
 
 
 class JobQueue:
