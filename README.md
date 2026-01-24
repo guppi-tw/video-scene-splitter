@@ -72,17 +72,17 @@ python scripts\build_exe.py
 
 ```
 dist/
-  VideoSceneSplitter/
-    VideoSceneSplitter.exe  ← これを実行
-    ffmpeg/
-      ffmpeg.exe            ← 同梱されたffmpeg
-    その他DLLファイル...
+  VideoSceneSplitter.exe  ← これ1つだけ！
 ```
+
+onefileモードでビルドするため、EXEファイル1つに全てが含まれます（約100-200MB）。
 
 ### 配布方法
 
-`dist/VideoSceneSplitter` フォルダ全体をZIPに圧縮して配布してください。
-受け取った人は解凍して `VideoSceneSplitter.exe` をダブルクリックするだけで実行できます。
+`dist/VideoSceneSplitter.exe` をそのまま配布してください。
+受け取った人はダブルクリックするだけで実行できます。
+
+**注意**: ffmpegを同梱していない場合、実行環境にffmpegがインストールされている必要があります。
 
 ## ffmpegについて
 

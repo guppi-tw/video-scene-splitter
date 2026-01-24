@@ -1,6 +1,6 @@
 # -*- mode: python ; coding: utf-8 -*-
 """
-PyInstaller spec file for Video Scene Splitter
+PyInstaller spec file for Video Scene Splitter (onefile mode)
 
 Usage:
     pyinstaller video_scene_splitter.spec
@@ -37,6 +37,10 @@ hiddenimports = [
     'scenedetect',
     'scenedetect.detectors',
     'scenedetect.detectors.content_detector',
+    'scenedetect.video_stream',
+    'scenedetect.scene_manager',
+    'scenedetect.backends',
+    'scenedetect.backends.opencv',
     'cv2',
     'numpy',
 ]
@@ -63,16 +67,21 @@ a = Analysis(
 
 pyz = PYZ(a.pure, a.zipped_data, cipher=block_cipher)
 
+# onefile モード - すべてを1つのEXEにまとめる
 exe = EXE(
     pyz,
     a.scripts,
+    a.binaries,
+    a.zipfiles,
+    a.datas,
     [],
-    exclude_binaries=True,
     name='VideoSceneSplitter',
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
     upx=True,
+    upx_exclude=[],
+    runtime_tmpdir=None,
     console=False,  # GUIアプリなのでコンソールは非表示
     disable_windowed_traceback=False,
     argv_emulation=False,
@@ -80,15 +89,4 @@ exe = EXE(
     codesign_identity=None,
     entitlements_file=None,
     icon=None,  # アイコンがあれば指定: icon='assets/icon.ico'
-)
-
-coll = COLLECT(
-    exe,
-    a.binaries,
-    a.zipfiles,
-    a.datas,
-    strip=False,
-    upx=True,
-    upx_exclude=[],
-    name='VideoSceneSplitter',
 )

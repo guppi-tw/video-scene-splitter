@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
 """
-Windows用EXEビルドスクリプト
+Windows用EXEビルドスクリプト (onefile mode)
 
 使用方法:
     python scripts/build_exe.py
 
 出力:
-    dist/VideoSceneSplitter/VideoSceneSplitter.exe
+    dist/VideoSceneSplitter.exe
 """
 
 import subprocess
@@ -54,7 +54,22 @@ def check_ffmpeg():
         print("警告: vendor/ffmpeg にffmpegが見つかりません")
         print("EXEにffmpegを同梱する場合は、先に以下を実行してください:")
         print("  python scripts/setup_ffmpeg.py")
+        print("")
+        print("ffmpegなしでビルドを続行します...")
+        print("（実行時にシステムのffmpegを使用します）")
         return False
+
+
+def clean_build():
+    """ビルドディレクトリをクリーンアップ"""
+    project_root = get_project_root()
+    
+    build_dir = project_root / "build"
+    if build_dir.exists():
+        print(f"Cleaning {build_dir}...")
+        shutil.rmtree(build_dir)
+    
+    # distディレクトリは残す（前のビルド結果を保持）
 
 
 def build():
@@ -67,7 +82,7 @@ def build():
         return False
     
     print("=" * 50)
-    print("Video Scene Splitter - EXE Build")
+    print("Video Scene Splitter - EXE Build (onefile mode)")
     print("=" * 50)
     print()
     
@@ -78,8 +93,12 @@ def build():
     # ffmpegの確認
     check_ffmpeg()
     
+    # ビルドディレクトリをクリーンアップ
+    clean_build()
+    
     print()
     print("ビルド開始...")
+    print("（onefileモードのため時間がかかります）")
     print()
     
     # PyInstallerを実行
@@ -99,28 +118,36 @@ def build():
         return False
     
     # 出力先を確認
-    dist_dir = project_root / "dist" / "VideoSceneSplitter"
+    dist_dir = project_root / "dist"
     exe_file = dist_dir / "VideoSceneSplitter.exe"
     
+    # macOS/Linux用
+    if not exe_file.exists():
+        exe_file = dist_dir / "VideoSceneSplitter"
+    
     if exe_file.exists():
+        file_size = exe_file.stat().st_size / (1024 * 1024)  # MB
         print()
         print("=" * 50)
         print("ビルド成功!")
         print("=" * 50)
         print()
-        print(f"出力先: {dist_dir}")
-        print(f"EXEファイル: {exe_file}")
+        print(f"出力ファイル: {exe_file}")
+        print(f"ファイルサイズ: {file_size:.1f} MB")
         print()
         print("実行方法:")
         print(f"  {exe_file}")
         print()
-        print("配布する場合は dist/VideoSceneSplitter フォルダ全体をZIPにしてください")
+        print("配布する場合はこのEXEファイル1つを配布してください")
+        print()
+        print("注意: ffmpegを同梱していない場合、実行環境にffmpegが")
+        print("      インストールされている必要があります")
         return True
     else:
         print()
         print("警告: EXEファイルが見つかりません")
-        print("macOS/Linuxでビルドした場合は dist/VideoSceneSplitter/VideoSceneSplitter が生成されます")
-        return True
+        print(f"dist ディレクトリの内容: {list(dist_dir.iterdir()) if dist_dir.exists() else 'なし'}")
+        return False
 
 
 def main():
