@@ -122,3 +122,8 @@ vendor/ffmpeg/ffmpeg
 vendor/ffmpeg/ffmpeg.exe
 vendor/ffmpeg/ffprobe
 vendor/ffmpeg/ffprobe.exe
+
+# PyInstaller build output
+build/
+dist/
+*.spec.bak

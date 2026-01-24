@@ -16,48 +16,98 @@
 - **Python**: 3.11以上
 - **ffmpeg**: 同梱スクリプトで自動ダウンロード可能（または手動インストール）
 
-## インストール
+## インストール（開発者向け）
 
-```bash
+```powershell
 # リポジトリをクローン
-git clone https://github.com/YOUR_USERNAME/video-scene-splitter.git
+git clone https://github.com/guppi-tw/video-scene-splitter.git
 cd video-scene-splitter
 
-# 仮想環境を作成（推奨）
-python3 -m venv venv
-source venv/bin/activate  # Windows: venv\Scripts\activate
+# 仮想環境を作成
+python -m venv venv
+.\venv\Scripts\Activate.ps1
 
 # 依存パッケージをインストール
 pip install -r requirements.txt
 
 # ffmpegをセットアップ（自動ダウンロード）
-python scripts/setup_ffmpeg.py
+python scripts\setup_ffmpeg.py
 ```
 
-### ffmpegについて
+## 起動方法
+
+```powershell
+# プロジェクトディレクトリで実行
+python -m app
+```
+
+## EXEファイルの作成（配布用）
+
+Pythonをインストールしていない環境でも実行できるEXEファイルを作成できます。
+
+### 方法1: バッチファイルで簡単ビルド
+
+```powershell
+# build.bat をダブルクリック、または以下を実行
+.\build.bat
+```
+
+### 方法2: 手動ビルド
+
+```powershell
+# 仮想環境を有効化
+.\venv\Scripts\Activate.ps1
+
+# PyInstallerをインストール（初回のみ）
+pip install pyinstaller
+
+# ffmpegをダウンロード（EXEに同梱する場合）
+python scripts\setup_ffmpeg.py
+
+# ビルド実行
+python scripts\build_exe.py
+```
+
+### ビルド出力
+
+```
+dist/
+  VideoSceneSplitter/
+    VideoSceneSplitter.exe  ← これを実行
+    ffmpeg/
+      ffmpeg.exe            ← 同梱されたffmpeg
+    その他DLLファイル...
+```
+
+### 配布方法
+
+`dist/VideoSceneSplitter` フォルダ全体をZIPに圧縮して配布してください。
+受け取った人は解凍して `VideoSceneSplitter.exe` をダブルクリックするだけで実行できます。
+
+## ffmpegについて
 
 アプリはffmpegを使用して動画処理を行います。以下の方法でffmpegを用意できます：
 
-#### 方法1: 自動ダウンロード（推奨）
+### 方法1: 自動ダウンロード（推奨）
 
-```bash
-python scripts/setup_ffmpeg.py
+```powershell
+python scripts\setup_ffmpeg.py
 ```
 
 このスクリプトは、お使いのOS（Windows/macOS/Linux）に対応したffmpegバイナリを自動的にダウンロードし、`vendor/ffmpeg/` に配置します。
 
-#### 方法2: 手動インストール
+### 方法2: 手動インストール
 
 既にffmpegがインストールされている場合、PATHに通っていれば自動的に検出されます。
+
+**Windows:**
+1. [ffmpeg公式サイト](https://ffmpeg.org/download.html)からダウンロード
+2. 解凍してPATHに追加
 
 **macOS (Homebrew):**
 ```bash
 brew install ffmpeg
 ```
-
-**Windows:**
-1. [ffmpeg公式サイト](https://ffmpeg.org/download.html)からダウンロード
-2. 解凍してPATHに追加
 
 **Ubuntu/Debian:**
 ```bash
@@ -66,16 +116,9 @@ sudo apt update && sudo apt install ffmpeg
 
 ### ffmpegの検索優先順位
 
-1. `vendor/ffmpeg/` 内の同梱バイナリ
+1. `vendor/ffmpeg/` 内の同梱バイナリ（またはEXE同梱）
 2. システムPATH上のffmpeg
 3. Windows一般的なパス（`C:/ffmpeg/bin/` など）
-
-## 起動方法
-
-```bash
-# プロジェクトディレクトリで実行
-python -m app
-```
 
 ## 使い方
 
@@ -84,20 +127,33 @@ python -m app
 - **フォルダ追加**: 「フォルダ追加」ボタンでフォルダを選択すると、再帰的にMP4ファイルを検索してキューに追加
 - **ファイル追加**: 「ファイル追加」ボタンで個別のMP4ファイルを追加
 
-### 2. 処理開始
+### 2. シーン検知設定（オプション）
+
+左側パネルの「シーン検知設定」で調整できます：
+
+| 設定 | 説明 |
+|------|------|
+| **閾値** | 高いほど鈍感（シーン数が減る）。VHS映像は35〜50推奨 |
+| **最小シーン長** | これより短いシーンは無視。VHS映像は5〜10秒推奨 |
+
+プリセット:
+- **標準設定**: 閾値27、最小2秒
+- **VHS向け設定**: 閾値40、最小5秒
+
+### 3. 処理開始
 
 - 「処理開始」ボタンをクリックすると、キュー内の動画を順番に処理
 - シーン検知 → サムネイル生成 の順で処理が進行
-- 処理状況はログエリアに表示
+- 処理状況はログエリアとプログレスバーに表示
 
-### 3. レビュー
+### 4. レビュー
 
 - 処理完了後、右側のレビューエリアにサムネイル一覧が表示
 - 各シーンの「Keep」チェックボックスで保持/削除を切り替え
 - サムネイルをクリックして選択し、「選択シーンをプレビュー」でOS標準プレイヤーで確認
 - 「イベント名」「日付」を入力して出力ファイル名をカスタマイズ
 
-### 4. 書き出し
+### 5. 書き出し
 
 - 「書き出し」ボタンをクリックして出力先フォルダを選択
 - Keep対象のシーンが595秒（9分55秒）単位で分割されてMP4出力
@@ -129,6 +185,7 @@ python -m app
 - **GUI**: PySide6 (Qt for Python)
 - **シーン検知**: PySceneDetect
 - **動画処理**: ffmpeg（同梱または外部）
+- **EXEビルド**: PyInstaller
 
 ## ディレクトリ構成
 
@@ -150,11 +207,15 @@ video-scene-splitter/
 │       ├── queue_widget.py   # キュー表示
 │       ├── review_widget.py  # レビューUI
 │       ├── log_widget.py     # ログ表示
+│       ├── settings_widget.py # 設定UI
 │       └── workers.py        # バックグラウンドワーカー
 ├── scripts/
-│   └── setup_ffmpeg.py       # ffmpegダウンロードスクリプト
+│   ├── setup_ffmpeg.py       # ffmpegダウンロードスクリプト
+│   └── build_exe.py          # EXEビルドスクリプト
 ├── vendor/
-│   └── ffmpeg/               # 同梱ffmpegバイナリ（自動ダウンロード）
+│   └── ffmpeg/               # 同梱ffmpegバイナリ
+├── build.bat                 # Windows用ビルドバッチ
+├── video_scene_splitter.spec # PyInstaller設定
 ├── requirements.txt
 ├── pyproject.toml
 └── README.md
@@ -175,8 +236,14 @@ RuntimeError: ffmpegが見つかりません。
 ```
 
 以下を試してください：
-1. `python scripts/setup_ffmpeg.py` を実行してffmpegをダウンロード
+1. `python scripts\setup_ffmpeg.py` を実行してffmpegをダウンロード
 2. または手動でffmpegをインストールしてPATHに追加
+
+### EXEビルドに失敗する
+
+1. 仮想環境が有効になっているか確認
+2. `pip install pyinstaller` を再実行
+3. ウイルス対策ソフトが干渉している場合は一時的に無効化
 
 ### macOSでセキュリティ警告が出る
 
