@@ -8,7 +8,7 @@ from PySide6.QtWidgets import (
 )
 from PySide6.QtCore import Signal
 
-from ..core import JobQueue, VideoJob, JobStatus
+from app.core import JobQueue, VideoJob, JobStatus
 
 
 class QueueWidget(QWidget):

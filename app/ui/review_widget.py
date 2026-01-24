@@ -15,7 +15,7 @@ from PySide6.QtWidgets import (
 from PySide6.QtCore import Signal, Qt, QDate
 from PySide6.QtGui import QPixmap
 
-from ..core import VideoJob, Scene, JobStatus
+from app.core import VideoJob, Scene, JobStatus
 
 
 class SceneThumbnail(QFrame):

@@ -7,7 +7,7 @@ from typing import Optional
 
 from PySide6.QtCore import QObject, Signal, QThread
 
-from ..core import (
+from app.core import (
     VideoJob, JobStatus, Scene,
     SceneDetectRunner, FFmpegRunner, Exporter
 )

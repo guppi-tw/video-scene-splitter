@@ -1,10 +1,10 @@
 """
 Core modules for video-scene-splitter
 """
-from .jobs import JobStatus, Scene, Clip, VideoJob, JobQueue
-from .scenedetect_runner import SceneDetectRunner
-from .ffmpeg_runner import FFmpegRunner
-from .exporter import Exporter
+from app.core.jobs import JobStatus, Scene, Clip, VideoJob, JobQueue
+from app.core.scenedetect_runner import SceneDetectRunner
+from app.core.ffmpeg_runner import FFmpegRunner
+from app.core.exporter import Exporter
 
 __all__ = [
     'JobStatus',

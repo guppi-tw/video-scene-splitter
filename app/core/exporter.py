@@ -4,8 +4,8 @@
 from pathlib import Path
 from typing import Callable, Optional
 
-from .jobs import VideoJob, Scene, Clip
-from .ffmpeg_runner import FFmpegRunner
+from app.core.jobs import VideoJob, Scene, Clip
+from app.core.ffmpeg_runner import FFmpegRunner
 
 
 class Exporter:
