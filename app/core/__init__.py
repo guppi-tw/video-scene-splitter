@@ -5,6 +5,7 @@ from app.core.jobs import JobStatus, Scene, Clip, VideoJob, JobQueue
 from app.core.scenedetect_runner import SceneDetectRunner
 from app.core.ffmpeg_runner import FFmpegRunner
 from app.core.exporter import Exporter
+from app.core.blank_detector import BlankDetector
 
 __all__ = [
     'JobStatus',
@@ -15,4 +16,5 @@ __all__ = [
     'SceneDetectRunner',
     'FFmpegRunner',
     'Exporter',
+    'BlankDetector',
 ]

@@ -30,7 +30,10 @@ class ProcessingWorker(QObject):
         job: VideoJob,
         temp_dir: Path,
         threshold: float = 27.0,
-        min_scene_len_sec: float = 2.0
+        min_scene_len_sec: float = 2.0,
+        detect_blanks: bool = True,
+        blank_variance_threshold: float = 500.0,
+        min_blank_duration: float = 0.2
     ):
         super().__init__()
         self.job = job
@@ -40,7 +43,10 @@ class ProcessingWorker(QObject):
         # 設定を反映したシーン検知器を作成
         self.scene_detector = SceneDetectRunner(
             threshold=threshold,
-            min_scene_len_sec=min_scene_len_sec
+            min_scene_len_sec=min_scene_len_sec,
+            detect_blanks=detect_blanks,
+            blank_variance_threshold=blank_variance_threshold,
+            min_blank_duration=min_blank_duration
         )
         self.ffmpeg = FFmpegRunner()
     

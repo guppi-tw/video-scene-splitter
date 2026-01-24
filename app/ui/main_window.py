@@ -110,6 +110,9 @@ class MainWindow(QMainWindow):
         # 設定から閾値と最小シーン長を取得
         threshold = self.settings_widget.threshold
         min_scene_len_sec = self.settings_widget.min_scene_len_sec
+        detect_blanks = self.settings_widget.detect_blanks
+        blank_variance_threshold = self.settings_widget.blank_variance_threshold
+        min_blank_duration = self.settings_widget.min_blank_duration
         
         # ワーカーとスレッドを作成
         self.processing_thread = QThread()
@@ -117,7 +120,10 @@ class MainWindow(QMainWindow):
             job,
             self.temp_dir,
             threshold=threshold,
-            min_scene_len_sec=min_scene_len_sec
+            min_scene_len_sec=min_scene_len_sec,
+            detect_blanks=detect_blanks,
+            blank_variance_threshold=blank_variance_threshold,
+            min_blank_duration=min_blank_duration
         )
         self.processing_worker.moveToThread(self.processing_thread)
         
