@@ -3,6 +3,7 @@
 """
 import tempfile
 from pathlib import Path
+from typing import List
 
 from PySide6.QtWidgets import (
     QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
@@ -10,12 +11,13 @@ from PySide6.QtWidgets import (
 )
 from PySide6.QtCore import Qt, QThread
 
-from app.core import JobQueue, VideoJob, JobStatus
+from app.core import JobQueue, VideoJob, JobStatus, Scene
 from app.ui.queue_widget import QueueWidget
 from app.ui.review_widget import ReviewWidget
 from app.ui.log_widget import LogWidget
 from app.ui.settings_widget import SettingsWidget
 from app.ui.preview_widget import PreviewWidget
+from app.ui.timeline_widget import TimelineWidget
 from app.ui.workers import ProcessingWorker, ExportWorker
 
 
@@ -45,7 +47,7 @@ class MainWindow(QMainWindow):
         
         main_layout = QVBoxLayout(central)
         
-        # メインスプリッター（左: キュー+設定、中央: レビュー、右: プレビュー）
+        # メインスプリッター（左: キュー+設定、中央: レビュー、右: プレビュー+タイムライン）
         splitter = QSplitter(Qt.Horizontal)
         
         # 左側: キュー + 設定
@@ -72,17 +74,22 @@ class MainWindow(QMainWindow):
         self.review_widget = ReviewWidget()
         splitter.addWidget(self.review_widget)
         
-        # 右側: プレビュー
+        # 右側: プレビュー + タイムライン
         preview_container = QWidget()
         preview_layout = QVBoxLayout(preview_container)
         preview_layout.setContentsMargins(0, 0, 0, 0)
+        preview_layout.setSpacing(5)
         
         self.preview_widget = PreviewWidget()
-        preview_layout.addWidget(self.preview_widget)
+        preview_layout.addWidget(self.preview_widget, stretch=1)
+        
+        # タイムラインウィジェット
+        self.timeline_widget = TimelineWidget()
+        preview_layout.addWidget(self.timeline_widget)
         
         splitter.addWidget(preview_container)
         
-        splitter.setSizes([300, 700, 400])
+        splitter.setSizes([300, 650, 450])
         main_layout.addWidget(splitter, stretch=1)
         
         # 下部: ログ
@@ -96,6 +103,15 @@ class MainWindow(QMainWindow):
         
         # レビューウィジェットからのシーン選択をプレビューに接続
         self.review_widget.scene_preview_requested.connect(self._on_scene_preview_requested)
+        
+        # プレビューの再生位置をタイムラインに反映
+        self.preview_widget.position_changed.connect(self._on_playhead_changed)
+        
+        # タイムラインからのシーク要求
+        self.timeline_widget.seek_requested.connect(self._on_timeline_seek)
+        
+        # タイムラインの境界変更
+        self.timeline_widget.boundaries_changed.connect(self._on_boundaries_changed)
     
     def _on_job_selected(self, job: VideoJob):
         """ジョブ選択時"""
@@ -103,6 +119,21 @@ class MainWindow(QMainWindow):
             self.review_widget.set_job(job)
             # プレビューに動画を読み込む
             self.preview_widget.load_video(job.source_path)
+            # タイムラインを更新
+            self._update_timeline(job)
+    
+    def _update_timeline(self, job: VideoJob):
+        """タイムラインを更新"""
+        if not job.scenes:
+            return
+        
+        # シーン開始時刻のリストを作成
+        scene_start_times = [scene.start_time for scene in job.scenes]
+        
+        # 動画の長さを取得（最後のシーンの終了時刻）
+        duration = job.scenes[-1].end_time if job.scenes else 0
+        
+        self.timeline_widget.set_scenes(scene_start_times, duration)
     
     def _on_scene_preview_requested(self, job: VideoJob, scene_index: int, start_time: float):
         """シーンプレビューリクエスト"""
@@ -113,6 +144,75 @@ class MainWindow(QMainWindow):
         # 指定位置にシークして再生
         self.preview_widget.seek_to(start_time)
         self.preview_widget.play()
+    
+    def _on_playhead_changed(self, position: float):
+        """再生位置が変わった"""
+        self.timeline_widget.set_playhead(position)
+    
+    def _on_timeline_seek(self, time: float):
+        """タイムラインからのシーク要求"""
+        self.preview_widget.seek_to(time)
+    
+    def _on_boundaries_changed(self, boundaries: List[float]):
+        """タイムラインの境界が変更された"""
+        job = self.review_widget.current_job
+        if not job:
+            return
+        
+        # シーンを再構築
+        self._rebuild_scenes(job, boundaries)
+        
+        # レビューUIを更新
+        self.review_widget.set_job(job)
+        
+        self.log_widget.append_log(f"シーン境界を更新: {len(boundaries)}シーン")
+    
+    def _rebuild_scenes(self, job: VideoJob, boundaries: List[float]):
+        """境界時刻からシーンを再構築"""
+        if not boundaries:
+            return
+        
+        # 最後のシーンの終了時刻を保持
+        duration = job.scenes[-1].end_time if job.scenes else 0
+        
+        # 古いシーンのメタデータを保持（可能な範囲で）
+        old_metadata = {}
+        for scene in job.scenes:
+            old_metadata[scene.index] = {
+                'event_name': scene.event_name,
+                'event_date': scene.event_date,
+                'keep': scene.keep,
+                'thumbnail_path': scene.thumbnail_path
+            }
+        
+        # 新しいシーンを作成
+        new_scenes = []
+        sorted_boundaries = sorted(boundaries)
+        
+        for i in range(len(sorted_boundaries)):
+            start_time = sorted_boundaries[i]
+            end_time = sorted_boundaries[i + 1] if i + 1 < len(sorted_boundaries) else duration
+            
+            scene = Scene(
+                index=i + 1,
+                start_time=start_time,
+                end_time=end_time
+            )
+            
+            # 近い位置の古いシーンからメタデータを引き継ぐ
+            for old_idx, meta in old_metadata.items():
+                # 開始時刻が近いシーンを探す
+                old_scene = next((s for s in job.scenes if s.index == old_idx), None)
+                if old_scene and abs(old_scene.start_time - start_time) < 5.0:
+                    scene.event_name = meta['event_name']
+                    scene.event_date = meta['event_date']
+                    scene.keep = meta['keep']
+                    scene.thumbnail_path = meta['thumbnail_path']
+                    break
+            
+            new_scenes.append(scene)
+        
+        job.scenes = new_scenes
     
     def _on_start_processing(self):
         """処理開始"""
@@ -201,6 +301,9 @@ class MainWindow(QMainWindow):
         
         # プレビューに動画を読み込む
         self.preview_widget.load_video(job.source_path)
+        
+        # タイムラインを更新
+        self._update_timeline(job)
     
     def _on_thumbnail_generated(self, scene_index: int, path: str):
         """サムネイル生成完了"""
@@ -228,7 +331,8 @@ class MainWindow(QMainWindow):
             "処理完了",
             f"{job.filename} のシーン検知が完了しました。\n"
             f"検出シーン数: {len(job.scenes)}\n\n"
-            f"レビューして書き出しを行ってください。"
+            f"レビューして書き出しを行ってください。\n"
+            f"タイムラインで境界を調整することもできます。"
         )
     
     def _on_error(self, message: str):

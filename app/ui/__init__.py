@@ -7,6 +7,7 @@ from app.ui.review_widget import ReviewWidget
 from app.ui.log_widget import LogWidget
 from app.ui.settings_widget import SettingsWidget
 from app.ui.preview_widget import PreviewWidget
+from app.ui.timeline_widget import TimelineWidget
 from app.ui.main_window import MainWindow
 
 __all__ = [
@@ -17,4 +18,5 @@ __all__ = [
     'ReviewWidget',
     'LogWidget',
     'PreviewWidget',
+    'TimelineWidget',
 ]

@@ -1,0 +1,415 @@
+"""
+タイムラインウィジェット - シーン境界の視覚的表示と調整
+"""
+from typing import Optional, List
+from dataclasses import dataclass
+
+from PySide6.QtWidgets import (
+    QWidget, QVBoxLayout, QHBoxLayout, QPushButton,
+    QLabel, QToolTip, QMenu
+)
+from PySide6.QtCore import Qt, Signal, QRect, QPoint
+from PySide6.QtGui import QPainter, QColor, QPen, QBrush, QMouseEvent, QFont
+
+
+@dataclass
+class BoundaryMarker:
+    """境界マーカー"""
+    time: float  # 秒
+    index: int   # シーンインデックス（この境界の後のシーン）
+    
+
+class TimelineBar(QWidget):
+    """タイムラインバー - 境界線の表示とドラッグ"""
+    
+    # シグナル
+    boundary_moved = Signal(int, float)  # index, new_time
+    boundary_added = Signal(float)  # time
+    boundary_removed = Signal(int)  # index
+    position_clicked = Signal(float)  # time（クリックした位置）
+    
+    MARKER_WIDTH = 8  # マーカーのドラッグ可能な幅
+    MIN_SCENE_DURATION = 1.0  # 最小シーン長（秒）
+    
+    def __init__(self):
+        super().__init__()
+        self.duration: float = 0.0
+        self.boundaries: List[BoundaryMarker] = []
+        self.playhead_position: float = 0.0
+        
+        self._dragging_index: Optional[int] = None
+        self._hover_index: Optional[int] = None
+        
+        self.setMinimumHeight(50)
+        self.setMaximumHeight(60)
+        self.setMouseTracking(True)
+        self.setCursor(Qt.ArrowCursor)
+        
+        # 色設定
+        self.color_background = QColor("#2a2a2a")
+        self.color_scene_even = QColor("#4a7c59")
+        self.color_scene_odd = QColor("#5a8c69")
+        self.color_boundary = QColor("#ffcc00")
+        self.color_boundary_hover = QColor("#ff9900")
+        self.color_playhead = QColor("#ff3333")
+        self.color_text = QColor("#ffffff")
+    
+    def set_duration(self, duration: float):
+        """動画の長さを設定"""
+        self.duration = duration
+        self.update()
+    
+    def set_boundaries(self, boundaries: List[float]):
+        """境界時刻のリストを設定（シーン開始時刻のリスト）"""
+        self.boundaries = []
+        for i, time in enumerate(boundaries):
+            if time > 0:  # 0秒は境界として表示しない
+                self.boundaries.append(BoundaryMarker(time=time, index=i))
+        self.update()
+    
+    def set_playhead(self, position: float):
+        """再生位置を設定"""
+        self.playhead_position = position
+        self.update()
+    
+    def _time_to_x(self, time: float) -> int:
+        """時刻をX座標に変換"""
+        if self.duration <= 0:
+            return 0
+        margin = 10
+        available_width = self.width() - 2 * margin
+        return margin + int((time / self.duration) * available_width)
+    
+    def _x_to_time(self, x: int) -> float:
+        """X座標を時刻に変換"""
+        if self.duration <= 0:
+            return 0
+        margin = 10
+        available_width = self.width() - 2 * margin
+        x_clamped = max(margin, min(x, self.width() - margin))
+        return ((x_clamped - margin) / available_width) * self.duration
+    
+    def _get_boundary_at(self, x: int) -> Optional[int]:
+        """指定X座標にある境界のインデックスを取得"""
+        for i, marker in enumerate(self.boundaries):
+            marker_x = self._time_to_x(marker.time)
+            if abs(x - marker_x) <= self.MARKER_WIDTH:
+                return i
+        return None
+    
+    def paintEvent(self, event):
+        """描画"""
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.Antialiasing)
+        
+        width = self.width()
+        height = self.height()
+        margin = 10
+        bar_height = 30
+        bar_top = 10
+        
+        # 背景
+        painter.fillRect(self.rect(), self.color_background)
+        
+        if self.duration <= 0:
+            painter.setPen(self.color_text)
+            painter.drawText(self.rect(), Qt.AlignCenter, "動画を読み込んでください")
+            return
+        
+        # シーン領域を描画
+        scene_times = [0.0] + [m.time for m in self.boundaries] + [self.duration]
+        for i in range(len(scene_times) - 1):
+            start_x = self._time_to_x(scene_times[i])
+            end_x = self._time_to_x(scene_times[i + 1])
+            
+            color = self.color_scene_even if i % 2 == 0 else self.color_scene_odd
+            painter.fillRect(start_x, bar_top, end_x - start_x, bar_height, color)
+        
+        # 境界線を描画
+        for i, marker in enumerate(self.boundaries):
+            x = self._time_to_x(marker.time)
+            
+            # ホバー中または選択中は色を変える
+            if i == self._hover_index or i == self._dragging_index:
+                pen = QPen(self.color_boundary_hover, 3)
+            else:
+                pen = QPen(self.color_boundary, 2)
+            
+            painter.setPen(pen)
+            painter.drawLine(x, bar_top - 5, x, bar_top + bar_height + 5)
+            
+            # ハンドル（三角形）
+            painter.setBrush(QBrush(pen.color()))
+            triangle = [
+                QPoint(x - 5, bar_top - 5),
+                QPoint(x + 5, bar_top - 5),
+                QPoint(x, bar_top + 2)
+            ]
+            painter.drawPolygon(triangle)
+        
+        # 再生位置（プレイヘッド）
+        playhead_x = self._time_to_x(self.playhead_position)
+        painter.setPen(QPen(self.color_playhead, 2))
+        painter.drawLine(playhead_x, bar_top, playhead_x, bar_top + bar_height)
+        
+        # 時間ラベル
+        painter.setPen(self.color_text)
+        font = QFont()
+        font.setPointSize(9)
+        painter.setFont(font)
+        
+        # 開始時刻
+        painter.drawText(margin, height - 5, "0:00")
+        
+        # 終了時刻
+        end_text = self._format_time(self.duration)
+        text_width = painter.fontMetrics().horizontalAdvance(end_text)
+        painter.drawText(width - margin - text_width, height - 5, end_text)
+        
+        # 現在位置
+        current_text = self._format_time(self.playhead_position)
+        painter.drawText(playhead_x - 20, height - 5, current_text)
+    
+    def _format_time(self, seconds: float) -> str:
+        """秒を MM:SS 形式に変換"""
+        total_sec = int(seconds)
+        m, s = divmod(total_sec, 60)
+        h, m = divmod(m, 60)
+        if h > 0:
+            return f"{h}:{m:02d}:{s:02d}"
+        return f"{m}:{s:02d}"
+    
+    def mousePressEvent(self, event: QMouseEvent):
+        """マウス押下"""
+        if event.button() == Qt.LeftButton:
+            x = event.position().x()
+            boundary_idx = self._get_boundary_at(int(x))
+            
+            if boundary_idx is not None:
+                # 境界をドラッグ開始
+                self._dragging_index = boundary_idx
+                self.setCursor(Qt.SizeHorCursor)
+            else:
+                # クリック位置に移動
+                time = self._x_to_time(int(x))
+                self.position_clicked.emit(time)
+        
+        elif event.button() == Qt.RightButton:
+            # 右クリックメニュー
+            self._show_context_menu(event.position().toPoint())
+    
+    def mouseMoveEvent(self, event: QMouseEvent):
+        """マウス移動"""
+        x = int(event.position().x())
+        
+        if self._dragging_index is not None:
+            # ドラッグ中
+            new_time = self._x_to_time(x)
+            
+            # 前後の境界との距離を確保
+            prev_time = 0.0
+            next_time = self.duration
+            
+            if self._dragging_index > 0:
+                prev_time = self.boundaries[self._dragging_index - 1].time
+            if self._dragging_index < len(self.boundaries) - 1:
+                next_time = self.boundaries[self._dragging_index + 1].time
+            
+            # 最小シーン長を確保
+            new_time = max(prev_time + self.MIN_SCENE_DURATION, new_time)
+            new_time = min(next_time - self.MIN_SCENE_DURATION, new_time)
+            
+            self.boundaries[self._dragging_index].time = new_time
+            self.update()
+        else:
+            # ホバー判定
+            boundary_idx = self._get_boundary_at(x)
+            if boundary_idx != self._hover_index:
+                self._hover_index = boundary_idx
+                if boundary_idx is not None:
+                    self.setCursor(Qt.SizeHorCursor)
+                    # ツールチップ表示
+                    time = self.boundaries[boundary_idx].time
+                    QToolTip.showText(
+                        event.globalPosition().toPoint(),
+                        f"境界 {boundary_idx + 1}: {self._format_time(time)}\n"
+                        f"ドラッグで移動 / 右クリックで削除"
+                    )
+                else:
+                    self.setCursor(Qt.ArrowCursor)
+                self.update()
+    
+    def mouseReleaseEvent(self, event: QMouseEvent):
+        """マウス解放"""
+        if event.button() == Qt.LeftButton and self._dragging_index is not None:
+            # ドラッグ完了 - シグナル発行
+            marker = self.boundaries[self._dragging_index]
+            self.boundary_moved.emit(marker.index, marker.time)
+            self._dragging_index = None
+            self.setCursor(Qt.ArrowCursor)
+    
+    def leaveEvent(self, event):
+        """マウスがウィジェットから出た"""
+        self._hover_index = None
+        self.update()
+    
+    def _show_context_menu(self, pos: QPoint):
+        """コンテキストメニューを表示"""
+        menu = QMenu(self)
+        
+        x = pos.x()
+        boundary_idx = self._get_boundary_at(x)
+        
+        if boundary_idx is not None:
+            # 境界上で右クリック
+            action_delete = menu.addAction("この境界を削除")
+            action_delete.triggered.connect(
+                lambda: self._on_delete_boundary(boundary_idx)
+            )
+        else:
+            # 空白部分で右クリック
+            time = self._x_to_time(x)
+            action_add = menu.addAction(f"ここに境界を追加 ({self._format_time(time)})")
+            action_add.triggered.connect(
+                lambda: self.boundary_added.emit(time)
+            )
+        
+        menu.exec(self.mapToGlobal(pos))
+    
+    def _on_delete_boundary(self, idx: int):
+        """境界を削除"""
+        if 0 <= idx < len(self.boundaries):
+            marker = self.boundaries[idx]
+            self.boundary_removed.emit(marker.index)
+
+
+class TimelineWidget(QWidget):
+    """タイムラインウィジェット（バー + コントロール）"""
+    
+    # シグナル
+    boundaries_changed = Signal(list)  # 新しい境界時刻リスト
+    seek_requested = Signal(float)  # シーク要求（秒）
+    
+    def __init__(self):
+        super().__init__()
+        self.duration: float = 0.0
+        self.scene_start_times: List[float] = []
+        self._setup_ui()
+    
+    def _setup_ui(self):
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(5, 5, 5, 5)
+        layout.setSpacing(5)
+        
+        # ヘッダー
+        header_layout = QHBoxLayout()
+        
+        self.label_title = QLabel("タイムライン")
+        self.label_title.setStyleSheet("font-weight: bold;")
+        header_layout.addWidget(self.label_title)
+        
+        header_layout.addStretch()
+        
+        # 境界追加ボタン
+        self.btn_add = QPushButton("+ 現在位置に境界追加")
+        self.btn_add.setToolTip("再生位置に新しいシーン境界を追加")
+        self.btn_add.clicked.connect(self._on_add_at_playhead)
+        self.btn_add.setEnabled(False)
+        header_layout.addWidget(self.btn_add)
+        
+        # リセットボタン
+        self.btn_reset = QPushButton("リセット")
+        self.btn_reset.setToolTip("境界を元の検知結果に戻す")
+        self.btn_reset.clicked.connect(self._on_reset)
+        self.btn_reset.setEnabled(False)
+        header_layout.addWidget(self.btn_reset)
+        
+        layout.addLayout(header_layout)
+        
+        # タイムラインバー
+        self.timeline_bar = TimelineBar()
+        self.timeline_bar.boundary_moved.connect(self._on_boundary_moved)
+        self.timeline_bar.boundary_added.connect(self._on_boundary_added)
+        self.timeline_bar.boundary_removed.connect(self._on_boundary_removed)
+        self.timeline_bar.position_clicked.connect(self._on_position_clicked)
+        layout.addWidget(self.timeline_bar)
+        
+        # 説明
+        help_label = QLabel(
+            "💡 境界線をドラッグして調整 / 右クリックで追加・削除 / クリックでその位置へシーク"
+        )
+        help_label.setStyleSheet("color: #888; font-size: 10px;")
+        layout.addWidget(help_label)
+    
+    def set_scenes(self, scene_start_times: List[float], duration: float):
+        """シーン情報を設定"""
+        self.duration = duration
+        self.scene_start_times = scene_start_times.copy()
+        self._original_boundaries = scene_start_times.copy()
+        
+        self.timeline_bar.set_duration(duration)
+        self.timeline_bar.set_boundaries(scene_start_times)
+        
+        self.btn_add.setEnabled(True)
+        self.btn_reset.setEnabled(True)
+    
+    def set_playhead(self, position: float):
+        """再生位置を更新"""
+        self.timeline_bar.set_playhead(position)
+    
+    def get_boundaries(self) -> List[float]:
+        """現在の境界時刻リストを取得"""
+        return [0.0] + [m.time for m in self.timeline_bar.boundaries]
+    
+    def _on_boundary_moved(self, index: int, new_time: float):
+        """境界が移動された"""
+        # scene_start_timesを更新
+        if 0 < index < len(self.scene_start_times):
+            self.scene_start_times[index] = new_time
+        self._emit_changes()
+    
+    def _on_boundary_added(self, time: float):
+        """境界が追加された"""
+        # 適切な位置に挿入
+        new_times = self.scene_start_times.copy()
+        
+        # 挿入位置を探す
+        insert_idx = 0
+        for i, t in enumerate(new_times):
+            if t < time:
+                insert_idx = i + 1
+            else:
+                break
+        
+        new_times.insert(insert_idx, time)
+        self.scene_start_times = new_times
+        
+        self.timeline_bar.set_boundaries(new_times)
+        self._emit_changes()
+    
+    def _on_boundary_removed(self, index: int):
+        """境界が削除された"""
+        if 0 < index < len(self.scene_start_times):
+            del self.scene_start_times[index]
+            self.timeline_bar.set_boundaries(self.scene_start_times)
+            self._emit_changes()
+    
+    def _on_add_at_playhead(self):
+        """再生位置に境界を追加"""
+        time = self.timeline_bar.playhead_position
+        if time > 0 and time < self.duration:
+            self._on_boundary_added(time)
+    
+    def _on_reset(self):
+        """元の境界に戻す"""
+        self.scene_start_times = self._original_boundaries.copy()
+        self.timeline_bar.set_boundaries(self.scene_start_times)
+        self._emit_changes()
+    
+    def _on_position_clicked(self, time: float):
+        """タイムライン上でクリックされた"""
+        self.seek_requested.emit(time)
+    
+    def _emit_changes(self):
+        """変更をシグナルで通知"""
+        self.boundaries_changed.emit(self.get_boundaries())
