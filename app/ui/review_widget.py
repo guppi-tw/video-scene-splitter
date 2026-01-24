@@ -1,8 +1,6 @@
 """
 レビューUI - サムネイル一覧とkeep/drop切り替え、シーン別メタデータ入力
 """
-import subprocess
-import platform
 from pathlib import Path
 from datetime import date
 
@@ -21,7 +19,8 @@ from app.core import VideoJob, Scene, JobStatus
 class SceneThumbnail(QFrame):
     """シーンサムネイルウィジェット（メタデータ入力付き）"""
     
-    clicked = Signal(object)  # Scene
+    clicked = Signal(object)  # Scene（シングルクリック）
+    double_clicked = Signal(object)  # Scene（ダブルクリック - プレビュー再生用）
     keep_changed = Signal(object, bool)  # Scene, keep
     metadata_changed = Signal(object)  # Scene
     
@@ -41,11 +40,12 @@ class SceneThumbnail(QFrame):
         layout.setContentsMargins(5, 5, 5, 5)
         layout.setSpacing(3)
         
-        # サムネイル画像
+        # サムネイル画像（クリック可能）
         self.thumb_label = QLabel()
         self.thumb_label.setFixedSize(200, 120)
         self.thumb_label.setAlignment(Qt.AlignCenter)
-        self.thumb_label.setStyleSheet("background-color: #333;")
+        self.thumb_label.setStyleSheet("background-color: #333; cursor: pointer;")
+        self.thumb_label.setToolTip("ダブルクリックでプレビュー再生")
         layout.addWidget(self.thumb_label)
         
         # シーン情報
@@ -60,6 +60,13 @@ class SceneThumbnail(QFrame):
         self.time_label.setAlignment(Qt.AlignCenter)
         self.time_label.setStyleSheet("font-size: 10px; color: #666;")
         layout.addWidget(self.time_label)
+        
+        # プレビューボタン
+        self.btn_preview = QPushButton("▶ プレビュー")
+        self.btn_preview.setMaximumHeight(24)
+        self.btn_preview.clicked.connect(self._on_preview_clicked)
+        self.btn_preview.setToolTip("このシーンの開始位置から再生")
+        layout.addWidget(self.btn_preview)
         
         # イベント名入力
         name_layout = QHBoxLayout()
@@ -190,6 +197,10 @@ class SceneThumbnail(QFrame):
         self._update_style()
         self.keep_changed.emit(self.scene, self.scene.keep)
     
+    def _on_preview_clicked(self):
+        """プレビューボタンクリック"""
+        self.double_clicked.emit(self.scene)
+    
     def _update_style(self):
         if self.scene.keep:
             self.setStyleSheet("SceneThumbnail { background-color: #e8f5e9; }")
@@ -211,12 +222,18 @@ class SceneThumbnail(QFrame):
         if event.button() == Qt.LeftButton:
             self.clicked.emit(self.scene)
         super().mousePressEvent(event)
+    
+    def mouseDoubleClickEvent(self, event):
+        if event.button() == Qt.LeftButton:
+            self.double_clicked.emit(self.scene)
+        super().mouseDoubleClickEvent(event)
 
 
 class ReviewWidget(QWidget):
     """レビューUI"""
     
     export_requested = Signal(object, Path)  # VideoJob, output_dir
+    scene_preview_requested = Signal(object, int, float)  # VideoJob, scene_index, start_time
     
     def __init__(self):
         super().__init__()
@@ -256,6 +273,7 @@ class ReviewWidget(QWidget):
         help_label = QLabel(
             "💡 各シーンで名前・日付を入力すると、以降のシーンに引き継がれます。"
             "空欄のシーンは前のシーンの値を使用します。"
+            "【ダブルクリック】または【▶ プレビュー】ボタンで再生できます。"
         )
         help_label.setStyleSheet("color: #666; font-size: 11px; padding: 5px;")
         help_label.setWordWrap(True)
@@ -286,11 +304,6 @@ class ReviewWidget(QWidget):
         
         btn_layout.addStretch()
         
-        self.btn_preview = QPushButton("選択シーンをプレビュー")
-        self.btn_preview.clicked.connect(self._on_preview)
-        self.btn_preview.setEnabled(False)
-        btn_layout.addWidget(self.btn_preview)
-        
         self.btn_export = QPushButton("書き出し")
         self.btn_export.clicked.connect(self._on_export)
         self.btn_export.setEnabled(False)
@@ -317,10 +330,11 @@ class ReviewWidget(QWidget):
         self.scene_widgets.clear()
         
         # シーンウィジェットを作成
-        cols = 4
+        cols = 3  # プレビューパネルがあるので3列に変更
         for i, scene in enumerate(job.scenes):
             widget = SceneThumbnail(scene, job)
             widget.clicked.connect(self._on_scene_clicked)
+            widget.double_clicked.connect(self._on_scene_double_clicked)
             widget.keep_changed.connect(self._on_scene_keep_changed)
             widget.metadata_changed.connect(self._on_scene_metadata_changed)
             
@@ -334,7 +348,6 @@ class ReviewWidget(QWidget):
         
         # ボタン状態更新
         self.btn_export.setEnabled(job.status == JobStatus.REVIEW)
-        self.btn_preview.setEnabled(False)
     
     def update_thumbnail(self, scene_index: int, path: str):
         """サムネイルを更新"""
@@ -389,8 +402,8 @@ class ReviewWidget(QWidget):
             widget.refresh_effective_label()
     
     def _on_scene_clicked(self, scene: Scene):
+        """シーンがシングルクリックされた"""
         self.selected_scene = scene
-        self.btn_preview.setEnabled(True)
         
         # 選択状態を視覚的に表示
         for widget in self.scene_widgets:
@@ -398,6 +411,15 @@ class ReviewWidget(QWidget):
                 widget.setLineWidth(3)
             else:
                 widget.setLineWidth(2)
+    
+    def _on_scene_double_clicked(self, scene: Scene):
+        """シーンがダブルクリックされた - プレビュー再生"""
+        if self.current_job:
+            self.scene_preview_requested.emit(
+                self.current_job,
+                scene.index,
+                scene.start_time
+            )
     
     def _on_scene_keep_changed(self, scene: Scene, keep: bool):
         pass  # 必要に応じて処理
@@ -409,40 +431,6 @@ class ReviewWidget(QWidget):
     def _on_drop_all(self):
         for widget in self.scene_widgets:
             widget.keep_check.setChecked(False)
-    
-    def _on_preview(self):
-        """選択シーンをプレビュー"""
-        if not self.selected_scene or not self.current_job:
-            return
-        
-        video_path = self.current_job.source_path
-        start_time = self.selected_scene.start_time
-        
-        # OS標準プレイヤーで開く
-        system = platform.system()
-        try:
-            if system == "Darwin":  # macOS
-                subprocess.Popen(["open", str(video_path)])
-            elif system == "Windows":
-                subprocess.Popen(["start", "", str(video_path)], shell=True)
-            else:  # Linux
-                subprocess.Popen(["xdg-open", str(video_path)])
-            
-            QMessageBox.information(
-                self,
-                "プレビュー",
-                f"動画を開きました。\n開始位置: {self._format_time(start_time)}\n\n"
-                f"※手動でシーク位置を調整してください。"
-            )
-        except Exception as e:
-            QMessageBox.warning(self, "エラー", f"プレビューを開けませんでした: {e}")
-    
-    def _format_time(self, seconds: float) -> str:
-        m, s = divmod(int(seconds), 60)
-        h, m = divmod(m, 60)
-        if h > 0:
-            return f"{h:02d}:{m:02d}:{s:02d}"
-        return f"{m:02d}:{s:02d}"
     
     def _on_export(self):
         """書き出し開始"""
