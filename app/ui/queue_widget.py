@@ -6,7 +6,7 @@ from PySide6.QtWidgets import (
     QTableWidget, QTableWidgetItem, QHeaderView,
     QFileDialog, QAbstractItemView
 )
-from PySide6.QtCore import Signal
+from PySide6.QtCore import Signal, Qt
 
 from app.core import JobQueue, VideoJob, JobStatus
 
@@ -16,6 +16,7 @@ class QueueWidget(QWidget):
     
     job_selected = Signal(object)  # VideoJob
     start_processing = Signal()
+    start_manual_edit = Signal(object)  # VideoJob - 手動編集モード
     
     def __init__(self, job_queue: JobQueue):
         super().__init__()
@@ -25,28 +26,39 @@ class QueueWidget(QWidget):
     def _setup_ui(self):
         layout = QVBoxLayout(self)
         
-        # ボタン行
-        btn_layout = QHBoxLayout()
+        # ボタン行1: ファイル操作
+        btn_layout1 = QHBoxLayout()
         
         self.btn_add_folder = QPushButton("フォルダ追加")
         self.btn_add_folder.clicked.connect(self._on_add_folder)
-        btn_layout.addWidget(self.btn_add_folder)
+        btn_layout1.addWidget(self.btn_add_folder)
         
         self.btn_add_file = QPushButton("ファイル追加")
         self.btn_add_file.clicked.connect(self._on_add_file)
-        btn_layout.addWidget(self.btn_add_file)
+        btn_layout1.addWidget(self.btn_add_file)
         
         self.btn_remove = QPushButton("削除")
         self.btn_remove.clicked.connect(self._on_remove)
-        btn_layout.addWidget(self.btn_remove)
+        btn_layout1.addWidget(self.btn_remove)
         
-        btn_layout.addStretch()
+        btn_layout1.addStretch()
+        layout.addLayout(btn_layout1)
         
-        self.btn_start = QPushButton("処理開始")
+        # ボタン行2: 処理モード選択
+        btn_layout2 = QHBoxLayout()
+        
+        self.btn_start = QPushButton("▶ 自動シーン検知")
+        self.btn_start.setToolTip("PySceneDetectでシーンを自動検知します")
         self.btn_start.clicked.connect(self.start_processing.emit)
-        btn_layout.addWidget(self.btn_start)
+        btn_layout2.addWidget(self.btn_start)
         
-        layout.addLayout(btn_layout)
+        self.btn_manual = QPushButton("✎ 手動で編集")
+        self.btn_manual.setToolTip("シーン検知をスキップして手動で境界を設定します")
+        self.btn_manual.clicked.connect(self._on_manual_edit)
+        btn_layout2.addWidget(self.btn_manual)
+        
+        btn_layout2.addStretch()
+        layout.addLayout(btn_layout2)
         
         # テーブル
         self.table = QTableWidget()
@@ -84,6 +96,20 @@ class QueueWidget(QWidget):
             self.job_queue.remove_job(job_id)
             self.refresh()
     
+    def _on_manual_edit(self):
+        """手動編集モードを開始"""
+        row = self.table.currentRow()
+        if row >= 0:
+            job_id = int(self.table.item(row, 0).text())
+            job = self.job_queue.get_job_by_id(job_id)
+            if job and job.status == JobStatus.WAITING:
+                self.start_manual_edit.emit(job)
+        else:
+            # 選択されていない場合は次の待機中ジョブを使用
+            job = self.job_queue.get_next_waiting()
+            if job:
+                self.start_manual_edit.emit(job)
+    
     def _on_selection_changed(self):
         row = self.table.currentRow()
         if row >= 0:
@@ -120,6 +146,11 @@ class QueueWidget(QWidget):
             if int(self.table.item(row, 0).text()) == job_id:
                 self.table.selectRow(row)
                 break
-
-
-from PySide6.QtCore import Qt
+    
+    def get_selected_job(self) -> VideoJob:
+        """選択中のジョブを取得"""
+        row = self.table.currentRow()
+        if row >= 0:
+            job_id = int(self.table.item(row, 0).text())
+            return self.job_queue.get_job_by_id(job_id)
+        return None

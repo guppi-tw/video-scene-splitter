@@ -12,6 +12,7 @@ from PySide6.QtWidgets import (
 from PySide6.QtCore import Qt, QThread
 
 from app.core import JobQueue, VideoJob, JobStatus, Scene
+from app.core.ffmpeg_runner import FFmpegRunner
 from app.ui.queue_widget import QueueWidget
 from app.ui.review_widget import ReviewWidget
 from app.ui.log_widget import LogWidget
@@ -99,6 +100,7 @@ class MainWindow(QMainWindow):
     def _connect_signals(self):
         self.queue_widget.job_selected.connect(self._on_job_selected)
         self.queue_widget.start_processing.connect(self._on_start_processing)
+        self.queue_widget.start_manual_edit.connect(self._on_start_manual_edit)
         self.review_widget.export_requested.connect(self._on_export_requested)
         
         # レビューウィジェットからのシーン選択をプレビューに接続
@@ -215,7 +217,7 @@ class MainWindow(QMainWindow):
         job.scenes = new_scenes
     
     def _on_start_processing(self):
-        """処理開始"""
+        """処理開始（自動シーン検知）"""
         job = self.job_queue.get_next_waiting()
         if not job:
             QMessageBox.information(self, "情報", "処理待ちのジョブがありません")
@@ -223,8 +225,86 @@ class MainWindow(QMainWindow):
         
         self._start_job_processing(job)
     
+    def _on_start_manual_edit(self, job: VideoJob):
+        """手動編集モードを開始"""
+        if not job:
+            QMessageBox.information(self, "情報", "処理待ちのジョブがありません")
+            return
+        
+        self.log_widget.clear_log()
+        self.log_widget.set_status(f"手動編集モード: {job.filename}")
+        self.log_widget.append_log("動画情報を取得中...")
+        
+        # 動画の長さを取得
+        ffmpeg = FFmpegRunner()
+        duration = ffmpeg.get_video_duration(job.source_path)
+        
+        if duration is None:
+            QMessageBox.warning(
+                self, 
+                "エラー", 
+                f"動画の長さを取得できませんでした: {job.filename}"
+            )
+            return
+        
+        self.log_widget.append_log(f"動画の長さ: {duration:.1f}秒")
+        
+        # 動画全体を1シーンとして設定
+        scene = Scene(
+            index=1,
+            start_time=0.0,
+            end_time=duration
+        )
+        scene.keep = True
+        job.scenes = [scene]
+        
+        # ステータスをREVIEWに変更
+        job.status = JobStatus.REVIEW
+        
+        # サムネイルを生成（動画の最初の方）
+        thumbnail_time = min(2.0, duration / 2)
+        thumbnail_path = self.temp_dir / f"job_{job.id}_scene_001.jpg"
+        
+        self.log_widget.append_log("サムネイルを生成中...")
+        if ffmpeg.generate_thumbnail(job.source_path, thumbnail_time, thumbnail_path):
+            scene.thumbnail_path = thumbnail_path
+            self.log_widget.append_log(f"サムネイル生成完了")
+        
+        # UIを更新
+        self.queue_widget.refresh()
+        self.review_widget.set_job(job)
+        self.preview_widget.load_video(job.source_path)
+        self._update_timeline(job)
+        
+        self.log_widget.append_log("手動編集モードで開始しました")
+        self.log_widget.append_log("タイムライン上で右クリックして境界を追加できます")
+        self.log_widget.append_log("「+ 現在位置に境界追加」ボタンも使用できます")
+        
+        QMessageBox.information(
+            self,
+            "手動編集モード",
+            f"{job.filename} を手動編集モードで開きました。\n\n"
+            f"動画の長さ: {self._format_time(duration)}\n\n"
+            f"【操作方法】\n"
+            f"• タイムライン上で右クリック → 境界を追加\n"
+            f"• 「+ 現在位置に境界追加」ボタン → 再生位置に境界を追加\n"
+            f"• 境界線をドラッグ → 位置を調整\n"
+            f"• 境界線を右クリック → 境界を削除\n\n"
+            f"境界を設定したら、各シーンに名前・日付を入力して書き出してください。"
+        )
+    
+    def _format_time(self, seconds: float) -> str:
+        """秒を時:分:秒形式にフォーマット"""
+        hours = int(seconds // 3600)
+        minutes = int((seconds % 3600) // 60)
+        secs = int(seconds % 60)
+        if hours > 0:
+            return f"{hours}:{minutes:02d}:{secs:02d}"
+        else:
+            return f"{minutes}:{secs:02d}"
+    
     def _start_job_processing(self, job: VideoJob):
-        """ジョブの処理を開始"""
+        """ジョブの処理を開始（自動シーン検知）"""
         if self.processing_thread and self.processing_thread.isRunning():
             return
         
@@ -448,17 +528,8 @@ class MainWindow(QMainWindow):
             
             # 処理を停止
             self._on_stop()
-            if self.processing_thread:
-                self.processing_thread.quit()
-                self.processing_thread.wait(3000)
-            if self.export_thread:
-                self.export_thread.quit()
-                self.export_thread.wait(3000)
         
-        # プレビューをクリーンアップ
-        self.preview_widget.cleanup()
-        
-        # 一時ディレクトリをクリーンアップ
+        # 一時ディレクトリを削除
         import shutil
         try:
             shutil.rmtree(self.temp_dir)
