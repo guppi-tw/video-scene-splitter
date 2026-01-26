@@ -10,7 +10,7 @@ vendor/ffmpeg/ に配置します。
 
 対応プラットフォーム:
     - Windows (x64)
-    - macOS (x64, arm64)
+    - macOS (x64, arm64 / Apple Silicon)
     - Linux (x64)
 """
 import os
@@ -25,7 +25,7 @@ from pathlib import Path
 
 # ffmpeg静的ビルドのダウンロードURL
 # https://github.com/BtbN/FFmpeg-Builds (Windows/Linux)
-# https://evermeet.cx/ffmpeg/ (macOS) - 代替: https://www.osxexperts.net/
+# https://evermeet.cx/ffmpeg/ (macOS)
 FFMPEG_URLS = {
     "Windows": {
         "x86_64": "https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-win64-gpl.zip",
@@ -35,8 +35,14 @@ FFMPEG_URLS = {
     },
     "Darwin": {
         # macOS用は evermeet.cx から取得（arm64/x64両対応のユニバーサルバイナリ）
-        "x86_64": "https://evermeet.cx/ffmpeg/getrelease/zip",
-        "arm64": "https://evermeet.cx/ffmpeg/getrelease/zip",
+        "x86_64": {
+            "ffmpeg": "https://evermeet.cx/ffmpeg/getrelease/zip",
+            "ffprobe": "https://evermeet.cx/ffmpeg/getrelease/ffprobe/zip",
+        },
+        "arm64": {
+            "ffmpeg": "https://evermeet.cx/ffmpeg/getrelease/zip",
+            "ffprobe": "https://evermeet.cx/ffmpeg/getrelease/ffprobe/zip",
+        },
     },
 }
 
@@ -107,21 +113,119 @@ def extract_archive(archive_path: Path, dest_dir: Path) -> bool:
         return False
 
 
-def find_ffmpeg_binary(search_dir: Path, system: str) -> Path | None:
-    """展開されたディレクトリからffmpegバイナリを探す"""
+def find_binary(search_dir: Path, binary_name: str, system: str) -> Path | None:
+    """展開されたディレクトリからバイナリを探す"""
     if system == "Windows":
-        pattern = "**/ffmpeg.exe"
+        target_name = f"{binary_name}.exe"
     else:
-        pattern = "**/ffmpeg"
+        target_name = binary_name
     
-    for path in search_dir.rglob("ffmpeg*"):
-        if path.is_file():
-            if system == "Windows" and path.name == "ffmpeg.exe":
-                return path
-            elif system != "Windows" and path.name == "ffmpeg":
-                return path
+    for path in search_dir.rglob("*"):
+        if path.is_file() and path.name == target_name:
+            return path
     
     return None
+
+
+def setup_ffmpeg_macos(vendor_dir: Path, arch_urls: dict) -> bool:
+    """macOS用のffmpegセットアップ（ffmpegとffprobeを別々にダウンロード）"""
+    import tempfile
+    
+    binaries = ["ffmpeg", "ffprobe"]
+    
+    for binary in binaries:
+        url = arch_urls[binary]
+        dest_path = vendor_dir / binary
+        
+        if dest_path.exists():
+            print(f"{binary} already exists: {dest_path}")
+            continue
+        
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            tmp_path = Path(tmp_dir)
+            archive_path = tmp_path / f"{binary}.zip"
+            
+            if not download_file(url, archive_path, f"Downloading {binary}"):
+                return False
+            
+            # 展開
+            extract_dir = tmp_path / "extracted"
+            extract_dir.mkdir()
+            if not extract_archive(archive_path, extract_dir):
+                return False
+            
+            # バイナリを探す
+            binary_path = find_binary(extract_dir, binary, "Darwin")
+            if not binary_path:
+                print(f"Could not find {binary} binary in archive")
+                return False
+            
+            print(f"Found: {binary_path}")
+            
+            # vendorディレクトリにコピー
+            shutil.copy2(binary_path, dest_path)
+            os.chmod(dest_path, 0o755)
+            print(f"Installed: {dest_path}")
+    
+    return True
+
+
+def setup_ffmpeg_other(vendor_dir: Path, url: str, system: str) -> bool:
+    """Windows/Linux用のffmpegセットアップ"""
+    import tempfile
+    
+    ffmpeg_name = "ffmpeg.exe" if system == "Windows" else "ffmpeg"
+    ffprobe_name = "ffprobe.exe" if system == "Windows" else "ffprobe"
+    
+    existing_ffmpeg = vendor_dir / ffmpeg_name
+    if existing_ffmpeg.exists():
+        print(f"ffmpeg already exists: {existing_ffmpeg}")
+        response = input("Overwrite? [y/N]: ").strip().lower()
+        if response != 'y':
+            print("Skipped.")
+            return True
+    
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        tmp_path = Path(tmp_dir)
+        
+        # ダウンロード
+        if url.endswith(".zip"):
+            archive_name = "ffmpeg.zip"
+        elif url.endswith(".tar.xz"):
+            archive_name = "ffmpeg.tar.xz"
+        else:
+            archive_name = "ffmpeg.zip"
+        
+        archive_path = tmp_path / archive_name
+        if not download_file(url, archive_path, "Downloading ffmpeg"):
+            return False
+        
+        # 展開
+        extract_dir = tmp_path / "extracted"
+        extract_dir.mkdir()
+        if not extract_archive(archive_path, extract_dir):
+            return False
+        
+        # ffmpegバイナリを探してコピー
+        for binary_name in ["ffmpeg", "ffprobe"]:
+            binary_path = find_binary(extract_dir, binary_name, system)
+            if binary_path:
+                if system == "Windows":
+                    dest_name = f"{binary_name}.exe"
+                else:
+                    dest_name = binary_name
+                
+                dest_path = vendor_dir / dest_name
+                shutil.copy2(binary_path, dest_path)
+                
+                if system != "Windows":
+                    os.chmod(dest_path, 0o755)
+                
+                print(f"Installed: {dest_path}")
+            else:
+                print(f"Warning: Could not find {binary_name}")
+    
+    return True
 
 
 def setup_ffmpeg() -> bool:
@@ -144,64 +248,15 @@ def setup_ffmpeg() -> bool:
         else:
             return False
     
-    url = arch_urls[machine]
-    
     # vendorディレクトリを準備
     vendor_dir = get_vendor_dir()
     vendor_dir.mkdir(parents=True, exist_ok=True)
     
-    # 既存のffmpegがあるかチェック
-    ffmpeg_name = "ffmpeg.exe" if system == "Windows" else "ffmpeg"
-    existing_ffmpeg = vendor_dir / ffmpeg_name
-    if existing_ffmpeg.exists():
-        print(f"ffmpeg already exists: {existing_ffmpeg}")
-        response = input("Overwrite? [y/N]: ").strip().lower()
-        if response != 'y':
-            print("Skipped.")
-            return True
-    
-    # 一時ディレクトリで作業
-    import tempfile
-    with tempfile.TemporaryDirectory() as tmp_dir:
-        tmp_path = Path(tmp_dir)
-        
-        # ダウンロード
-        if url.endswith(".zip"):
-            archive_name = "ffmpeg.zip"
-        elif url.endswith(".tar.xz"):
-            archive_name = "ffmpeg.tar.xz"
-        else:
-            archive_name = "ffmpeg.zip"  # デフォルト
-        
-        archive_path = tmp_path / archive_name
-        if not download_file(url, archive_path, "Downloading ffmpeg"):
-            return False
-        
-        # 展開
-        extract_dir = tmp_path / "extracted"
-        extract_dir.mkdir()
-        if not extract_archive(archive_path, extract_dir):
-            return False
-        
-        # ffmpegバイナリを探す
-        ffmpeg_bin = find_ffmpeg_binary(extract_dir, system)
-        if not ffmpeg_bin:
-            print("Could not find ffmpeg binary in archive")
-            return False
-        
-        print(f"Found: {ffmpeg_bin}")
-        
-        # vendorディレクトリにコピー
-        dest_path = vendor_dir / ffmpeg_name
-        shutil.copy2(ffmpeg_bin, dest_path)
-        
-        # 実行権限を付与（Unix系）
-        if system != "Windows":
-            os.chmod(dest_path, 0o755)
-        
-        print(f"Installed: {dest_path}")
-    
-    return True
+    # プラットフォーム別のセットアップ
+    if system == "Darwin":
+        return setup_ffmpeg_macos(vendor_dir, arch_urls[machine])
+    else:
+        return setup_ffmpeg_other(vendor_dir, arch_urls[machine], system)
 
 
 def main():
@@ -214,8 +269,17 @@ def main():
     
     if success:
         print()
+        print("=" * 50)
         print("Setup completed successfully!")
+        print("=" * 50)
         print(f"ffmpeg location: {get_vendor_dir()}")
+        
+        # インストールされたバイナリを表示
+        vendor_dir = get_vendor_dir()
+        print("\nInstalled binaries:")
+        for f in vendor_dir.iterdir():
+            if f.is_file() and not f.name.startswith('.'):
+                print(f"  - {f.name}")
     else:
         print()
         print("Setup failed.")
