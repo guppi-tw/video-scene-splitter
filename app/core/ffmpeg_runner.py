@@ -1,11 +1,14 @@
 """
 ffmpegによるサムネイル生成・動画分割
 """
+import logging
 import subprocess
 import shutil
 from pathlib import Path
 from typing import Callable, Optional
 import platform
+
+logger = logging.getLogger(__name__)
 
 
 def get_bundled_ffmpeg_path() -> Optional[Path]:
@@ -166,16 +169,24 @@ class FFmpegRunner:
                 return False
                 
         except subprocess.TimeoutExpired:
+            logger.warning(f"サムネイル生成がタイムアウト: {video_path} at {time_sec}s")
             if self._current_process:
                 self._current_process.kill()
             self._current_process = None
             return False
-        except Exception as e:
+        except FileNotFoundError as e:
+            logger.error(f"ffmpegが見つかりません: {e}")
             if progress_callback:
-                progress_callback(f"エラー: {str(e)}")
+                progress_callback(f"エラー: ffmpegが見つかりません")
             self._current_process = None
             return False
-    
+        except OSError as e:
+            logger.error(f"サムネイル生成中にOSエラー: {video_path}: {e}")
+            if progress_callback:
+                progress_callback(f"エラー: {e}")
+            self._current_process = None
+            return False
+
     def extract_clip(
         self,
         video_path: Path,
@@ -242,12 +253,27 @@ class FFmpegRunner:
                     progress_callback(f"書き出し失敗: {stderr.decode('utf-8', errors='ignore')[:200]}")
                 return False
                 
-        except Exception as e:
+        except subprocess.TimeoutExpired:
+            logger.warning(f"クリップ書き出しがタイムアウト: {video_path}")
+            if self._current_process:
+                self._current_process.kill()
+            self._current_process = None
             if progress_callback:
-                progress_callback(f"エラー: {str(e)}")
+                progress_callback("エラー: 書き出しがタイムアウトしました")
+            return False
+        except FileNotFoundError as e:
+            logger.error(f"ffmpegが見つかりません: {e}")
+            if progress_callback:
+                progress_callback("エラー: ffmpegが見つかりません")
             self._current_process = None
             return False
-    
+        except OSError as e:
+            logger.error(f"クリップ書き出し中にOSエラー: {video_path}: {e}")
+            if progress_callback:
+                progress_callback(f"エラー: {e}")
+            self._current_process = None
+            return False
+
     def get_video_duration(self, video_path: Path) -> Optional[float]:
         """動画の長さを取得"""
         cmd = [
@@ -276,5 +302,12 @@ class FFmpegRunner:
                 return hours * 3600 + minutes * 60 + seconds + ms / 100
             return None
             
-        except Exception:
+        except subprocess.TimeoutExpired:
+            logger.warning(f"動画情報取得がタイムアウト: {video_path}")
+            return None
+        except FileNotFoundError:
+            logger.error(f"ffmpegが見つかりません")
+            return None
+        except OSError as e:
+            logger.error(f"動画情報取得中にOSエラー: {video_path}: {e}")
             return None
