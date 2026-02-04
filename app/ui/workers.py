@@ -3,14 +3,14 @@
 """
 import tempfile
 from pathlib import Path
-from typing import Optional, Dict, Tuple, List
-from datetime import date
+from typing import Optional
 
 from PySide6.QtCore import QObject, Signal, QThread
 
 from app.core import (
     VideoJob, JobStatus, Scene, Clip,
-    SceneDetectRunner, FFmpegRunner, Exporter
+    SceneDetectRunner, FFmpegRunner, Exporter,
+    group_clips_by_metadata
 )
 
 
@@ -162,7 +162,7 @@ class ExportWorker(QObject):
             total_clips = len(clips)
             
             # メタデータでグループ化
-            clips_by_metadata = self._group_clips_by_metadata(clips)
+            clips_by_metadata = group_clips_by_metadata(clips)
             
             self.progress.emit(f"クリップ数: {total_clips}")
             self.progress.emit(f"出力グループ数: {len(clips_by_metadata)}")
@@ -225,18 +225,3 @@ class ExportWorker(QObject):
             self.job.status = JobStatus.ERROR
             self.job.error_message = str(e)
             self.error.emit(f"エラー: {str(e)}")
-    
-    def _group_clips_by_metadata(
-        self,
-        clips: List[Clip]
-    ) -> Dict[Tuple[str, Optional[date]], List[Clip]]:
-        """クリップをメタデータでグループ化"""
-        groups: Dict[Tuple[str, Optional[date]], List[Clip]] = {}
-        
-        for clip in clips:
-            key = (clip.event_name or "", clip.event_date)
-            if key not in groups:
-                groups[key] = []
-            groups[key].append(clip)
-        
-        return groups

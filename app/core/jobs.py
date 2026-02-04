@@ -4,8 +4,14 @@
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
-from typing import Optional, List, Tuple
+from typing import Optional, List, Tuple, Dict, TYPE_CHECKING
 from datetime import date
+
+if TYPE_CHECKING:
+    from app.core.jobs import Clip
+
+# 型エイリアス
+MetadataKey = Tuple[str, Optional[date]]
 
 
 class JobStatus(Enum):
@@ -51,10 +57,33 @@ class Clip:
     event_name: str = ""  # このクリップのイベント名
     event_date: Optional[date] = None  # このクリップの日付
     output_path: Optional[Path] = None
-    
+
     @property
     def duration(self) -> float:
         return self.end_time - self.start_time
+
+
+def group_clips_by_metadata(
+    clips: List[Clip]
+) -> Dict[MetadataKey, List[Clip]]:
+    """
+    クリップをメタデータ（イベント名、日付）でグループ化
+
+    Args:
+        clips: グループ化するクリップのリスト
+
+    Returns:
+        {(event_name, event_date): [clips]} の辞書
+    """
+    groups: Dict[MetadataKey, List[Clip]] = {}
+
+    for clip in clips:
+        key: MetadataKey = (clip.event_name or "", clip.event_date)
+        if key not in groups:
+            groups[key] = []
+        groups[key].append(clip)
+
+    return groups
 
 
 @dataclass

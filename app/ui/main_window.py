@@ -531,9 +531,15 @@ class MainWindow(QMainWindow):
         
         # 一時ディレクトリを削除
         import shutil
+        import logging
         try:
             shutil.rmtree(self.temp_dir)
-        except Exception:
+        except PermissionError as e:
+            logging.warning(f"一時ディレクトリの削除に失敗（権限エラー）: {self.temp_dir}: {e}")
+        except FileNotFoundError:
+            # 既に削除されている場合は無視
             pass
-        
+        except OSError as e:
+            logging.warning(f"一時ディレクトリの削除に失敗: {self.temp_dir}: {e}")
+
         event.accept()
