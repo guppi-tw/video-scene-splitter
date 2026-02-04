@@ -2,10 +2,9 @@
 分割・書き出し処理
 """
 from pathlib import Path
-from typing import Callable, Optional, List, Tuple
-from datetime import date
+from typing import Callable, Optional, List
 
-from app.core.jobs import VideoJob, Scene, Clip
+from app.core.jobs import VideoJob, Scene, Clip, group_clips_by_metadata
 from app.core.ffmpeg_runner import FFmpegRunner
 
 
@@ -163,7 +162,7 @@ class Exporter:
         
         # メタデータでグループ化して出力
         # 同じメタデータのクリップは同じフォルダに出力
-        clips_by_metadata = self._group_clips_by_metadata(clips)
+        clips_by_metadata = group_clips_by_metadata(clips)
         
         total_clips = len(clips)
         success_count = 0
@@ -208,18 +207,3 @@ class Exporter:
             progress_callback(f"書き出し完了: {success_count}/{total_clips} クリップ")
         
         return success_count > 0
-    
-    def _group_clips_by_metadata(
-        self,
-        clips: List[Clip]
-    ) -> dict[Tuple[str, Optional[date]], List[Clip]]:
-        """クリップをメタデータでグループ化"""
-        groups = {}
-        
-        for clip in clips:
-            key = (clip.event_name or "", clip.event_date)
-            if key not in groups:
-                groups[key] = []
-            groups[key].append(clip)
-        
-        return groups
