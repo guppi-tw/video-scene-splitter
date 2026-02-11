@@ -1,6 +1,7 @@
 """
 分割・書き出し処理
 """
+from datetime import date
 from pathlib import Path
 from typing import Callable, Optional, List
 
@@ -14,8 +15,9 @@ class Exporter:
     MAX_CLIP_DURATION = 595  # 9分55秒
     MIN_REMAINDER_DURATION = 30  # 30秒未満は前のクリップに吸収
     
-    def __init__(self, ffmpeg_runner: FFmpegRunner):
+    def __init__(self, ffmpeg_runner: FFmpegRunner, auto_split: bool = True):
         self.ffmpeg = ffmpeg_runner
+        self.auto_split = auto_split
     
     def calculate_clips(self, job: VideoJob) -> list[Clip]:
         """
@@ -72,7 +74,19 @@ class Exporter:
         event_name: str,
         event_date: Optional[date]
     ) -> list[Clip]:
-        """シーンを595秒単位で分割"""
+        """シーンを595秒単位で分割（auto_split=Falseの場合は分割しない）"""
+        if not self.auto_split:
+            clip = Clip(
+                index=start_index,
+                start_time=scene.start_time,
+                end_time=scene.end_time,
+                source_scene_indices=[scene.index],
+                event_name=event_name,
+                event_date=event_date,
+                filename_override=scene.filename_override
+            )
+            return [clip]
+
         clips = []
         current_start = scene.start_time
         current_index = start_index

@@ -118,12 +118,27 @@ class TimelineBar(QWidget):
         
         # シーン領域を描画
         scene_times = [0.0] + [m.time for m in self.boundaries] + [self.duration]
+        label_font = QFont()
+        label_font.setPointSize(10)
+        label_font.setBold(True)
         for i in range(len(scene_times) - 1):
             start_x = self._time_to_x(scene_times[i])
             end_x = self._time_to_x(scene_times[i + 1])
-            
+
             color = self.color_scene_even if i % 2 == 0 else self.color_scene_odd
             painter.fillRect(start_x, bar_top, end_x - start_x, bar_height, color)
+
+            # シーン番号ラベル
+            seg_width = end_x - start_x
+            label = str(i + 1)
+            painter.setFont(label_font)
+            fm = painter.fontMetrics()
+            text_w = fm.horizontalAdvance(label)
+            if seg_width > text_w + 4:
+                painter.setPen(QColor("#ffffff"))
+                cx = start_x + (seg_width - text_w) // 2
+                cy = bar_top + (bar_height + fm.ascent() - fm.descent()) // 2
+                painter.drawText(cx, cy, label)
         
         # 境界線を描画
         for i, marker in enumerate(self.boundaries):
@@ -319,7 +334,7 @@ class TimelineWidget(QWidget):
         
         # リセットボタン
         self.btn_reset = QPushButton("リセット")
-        self.btn_reset.setToolTip("境界を元の検知結果に戻す")
+        self.btn_reset.setToolTip("全ての境界をクリアして元に戻す")
         self.btn_reset.clicked.connect(self._on_reset)
         self.btn_reset.setEnabled(False)
         header_layout.addWidget(self.btn_reset)
@@ -336,7 +351,8 @@ class TimelineWidget(QWidget):
         
         # 説明
         help_label = QLabel(
-            "💡 境界線をドラッグして調整 / 右クリックで追加・削除 / クリックでその位置へシーク"
+            "Space: 再生/停止  S: 分割  左右: コマ送り  Ctrl+Z: 戻す  |  "
+            "ドラッグ: 境界調整  右クリック: 追加/削除  クリック: シーク"
         )
         help_label.setStyleSheet("color: #888; font-size: 10px;")
         layout.addWidget(help_label)

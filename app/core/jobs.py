@@ -34,6 +34,7 @@ class Scene:
     # シーン別メタデータ（Noneの場合は前のシーンから引き継ぎ）
     event_name: Optional[str] = None  # イベント名（Noneで引き継ぎ）
     event_date: Optional[date] = None  # 日付（Noneで引き継ぎ）
+    filename_override: Optional[str] = None  # ファイル名の直接指定
     
     @property
     def duration(self) -> float:
@@ -57,6 +58,7 @@ class Clip:
     event_name: str = ""  # このクリップのイベント名
     event_date: Optional[date] = None  # このクリップの日付
     output_path: Optional[Path] = None
+    filename_override: Optional[str] = None  # ファイル名の直接指定
 
     @property
     def duration(self) -> float:
@@ -192,6 +194,38 @@ class VideoJob:
                 if scene.has_metadata():
                     break
     
+    def rebuild_scenes_from_boundaries(self, boundaries: List[float], duration: float):
+        """
+        境界時刻リストからシーンを再構築。
+        旧シーンのメタデータは開始時刻が近いものから引き継ぐ。
+        """
+        if not boundaries:
+            return
+
+        sorted_boundaries = sorted(boundaries)
+        old_scenes = self.scenes.copy()
+
+        new_scenes = []
+        for i in range(len(sorted_boundaries)):
+            start_time = sorted_boundaries[i]
+            end_time = sorted_boundaries[i + 1] if i + 1 < len(sorted_boundaries) else duration
+
+            scene = Scene(index=i + 1, start_time=start_time, end_time=end_time)
+
+            # 旧シーンからメタデータを引き継ぎ（開始時刻が近いもの）
+            for old_scene in old_scenes:
+                if abs(old_scene.start_time - start_time) < 5.0:
+                    scene.event_name = old_scene.event_name
+                    scene.event_date = old_scene.event_date
+                    scene.keep = old_scene.keep
+                    scene.thumbnail_path = old_scene.thumbnail_path
+                    scene.filename_override = old_scene.filename_override
+                    break
+
+            new_scenes.append(scene)
+
+        self.scenes = new_scenes
+
     def get_output_folder_name(self, event_name: str = None, event_date: date = None) -> str:
         """出力フォルダ名を生成"""
         name = event_name or self.default_event_name or "untitled"
@@ -201,6 +235,11 @@ class VideoJob:
     
     def get_clip_filename(self, clip: Clip) -> str:
         """クリップファイル名を生成"""
+        if clip.filename_override:
+            name = clip.filename_override
+            if not name.endswith('.mp4'):
+                name += '.mp4'
+            return name
         name = clip.event_name or self.default_event_name or "untitled"
         d = clip.event_date or self.default_event_date
         date_str = d.strftime("%Y-%m-%d") if d else "unknown"

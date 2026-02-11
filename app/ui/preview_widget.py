@@ -6,7 +6,7 @@ from typing import Optional
 
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QPushButton,
-    QSlider, QLabel, QStyle, QSizePolicy
+    QSlider, QLabel, QStyle, QSizePolicy, QComboBox
 )
 from PySide6.QtCore import Qt, QUrl, Signal, Slot
 from PySide6.QtMultimedia import QMediaPlayer, QAudioOutput
@@ -18,12 +18,12 @@ class PreviewWidget(QWidget):
     
     # シグナル
     position_changed = Signal(float)  # 再生位置が変わった（秒）
+    split_requested = Signal(float)   # ここで分割（秒）
     
     def __init__(self):
         super().__init__()
         self.current_video_path: Optional[Path] = None
         self._duration_ms = 0
-        self._is_seeking = False
         self._setup_ui()
         self._setup_player()
     
@@ -39,19 +39,10 @@ class PreviewWidget(QWidget):
         self.video_widget.setStyleSheet("background-color: #000;")
         layout.addWidget(self.video_widget, stretch=1)
         
-        # シークバー
-        self.seek_slider = QSlider(Qt.Horizontal)
-        self.seek_slider.setRange(0, 1000)
-        self.seek_slider.setValue(0)
-        self.seek_slider.sliderPressed.connect(self._on_slider_pressed)
-        self.seek_slider.sliderReleased.connect(self._on_slider_released)
-        self.seek_slider.sliderMoved.connect(self._on_slider_moved)
-        layout.addWidget(self.seek_slider)
-        
-        # コントロールバー
+        # コントロールバー（1行目: 再生操作）
         controls_layout = QHBoxLayout()
         controls_layout.setSpacing(5)
-        
+
         # 再生/一時停止ボタン
         self.btn_play = QPushButton()
         self.btn_play.setIcon(self.style().standardIcon(QStyle.SP_MediaPlay))
@@ -59,7 +50,7 @@ class PreviewWidget(QWidget):
         self.btn_play.clicked.connect(self._on_play_clicked)
         self.btn_play.setEnabled(False)
         controls_layout.addWidget(self.btn_play)
-        
+
         # 停止ボタン
         self.btn_stop = QPushButton()
         self.btn_stop.setIcon(self.style().standardIcon(QStyle.SP_MediaStop))
@@ -67,7 +58,7 @@ class PreviewWidget(QWidget):
         self.btn_stop.clicked.connect(self._on_stop_clicked)
         self.btn_stop.setEnabled(False)
         controls_layout.addWidget(self.btn_stop)
-        
+
         # 5秒戻る
         self.btn_back = QPushButton()
         self.btn_back.setIcon(self.style().standardIcon(QStyle.SP_MediaSeekBackward))
@@ -76,7 +67,7 @@ class PreviewWidget(QWidget):
         self.btn_back.setEnabled(False)
         self.btn_back.setToolTip("5秒戻る")
         controls_layout.addWidget(self.btn_back)
-        
+
         # 5秒進む
         self.btn_forward = QPushButton()
         self.btn_forward.setIcon(self.style().standardIcon(QStyle.SP_MediaSeekForward))
@@ -85,31 +76,93 @@ class PreviewWidget(QWidget):
         self.btn_forward.setEnabled(False)
         self.btn_forward.setToolTip("5秒進む")
         controls_layout.addWidget(self.btn_forward)
-        
+
         controls_layout.addSpacing(10)
-        
+
+        # ここで分割ボタン
+        self.btn_split = QPushButton("ここで分割 [S]")
+        self.btn_split.setObjectName("btn_split")
+        self.btn_split.setToolTip("現在の再生位置に分割点を追加 (S)")
+        self.btn_split.clicked.connect(self._on_split_clicked)
+        self.btn_split.setEnabled(False)
+        controls_layout.addWidget(self.btn_split)
+
+        controls_layout.addSpacing(10)
+
         # 時間表示
-        self.time_label = QLabel("00:00 / 00:00")
-        self.time_label.setMinimumWidth(100)
+        self.time_label = QLabel("00:00.0 / 00:00.0")
+        self.time_label.setMinimumWidth(140)
         controls_layout.addWidget(self.time_label)
-        
+
         controls_layout.addStretch()
-        
+
         # 音量スライダー
         self.btn_volume = QPushButton()
         self.btn_volume.setIcon(self.style().standardIcon(QStyle.SP_MediaVolume))
         self.btn_volume.setFixedSize(32, 32)
         self.btn_volume.clicked.connect(self._on_mute_clicked)
         controls_layout.addWidget(self.btn_volume)
-        
+
         self.volume_slider = QSlider(Qt.Horizontal)
         self.volume_slider.setRange(0, 100)
         self.volume_slider.setValue(70)
         self.volume_slider.setFixedWidth(80)
         self.volume_slider.valueChanged.connect(self._on_volume_changed)
         controls_layout.addWidget(self.volume_slider)
-        
+
         layout.addLayout(controls_layout)
+
+        # コントロールバー（2行目: コマ送り + 再生速度）
+        controls2_layout = QHBoxLayout()
+        controls2_layout.setSpacing(5)
+
+        # コマ戻しボタン
+        self.btn_step_back = QPushButton("< 戻す")
+        self.btn_step_back.setFixedHeight(24)
+        self.btn_step_back.clicked.connect(self._on_step_back)
+        self.btn_step_back.setEnabled(False)
+        controls2_layout.addWidget(self.btn_step_back)
+
+        # ステップ幅セレクタ
+        self.step_combo = QComboBox()
+        self.step_combo.setFixedHeight(24)
+        self._step_values = [0.1, 0.25, 0.5, 1.0, 2.0, 5.0]
+        for v in self._step_values:
+            if v >= 1.0:
+                self.step_combo.addItem(f"{v:.0f}秒")
+            else:
+                self.step_combo.addItem(f"{v:.2f}秒")
+        self.step_combo.setCurrentIndex(2)  # 0.5秒デフォルト
+        self.step_combo.setToolTip("コマ送りの幅")
+        controls2_layout.addWidget(self.step_combo)
+
+        # コマ送りボタン
+        self.btn_step_forward = QPushButton("進む >")
+        self.btn_step_forward.setFixedHeight(24)
+        self.btn_step_forward.clicked.connect(self._on_step_forward)
+        self.btn_step_forward.setEnabled(False)
+        controls2_layout.addWidget(self.btn_step_forward)
+
+        controls2_layout.addSpacing(20)
+
+        # 再生速度
+        speed_label = QLabel("速度:")
+        speed_label.setFixedHeight(24)
+        controls2_layout.addWidget(speed_label)
+
+        self.speed_combo = QComboBox()
+        self.speed_combo.setFixedHeight(24)
+        self._speed_values = [0.25, 0.5, 0.75, 1.0, 1.25, 1.5, 2.0]
+        for v in self._speed_values:
+            self.speed_combo.addItem(f"x{v:.2f}" if v != int(v) else f"x{v:.1f}")
+        self.speed_combo.setCurrentIndex(3)  # x1.0デフォルト
+        self.speed_combo.currentIndexChanged.connect(self._on_speed_changed)
+        self.speed_combo.setToolTip("再生速度")
+        controls2_layout.addWidget(self.speed_combo)
+
+        controls2_layout.addStretch()
+
+        layout.addLayout(controls2_layout)
     
     def _setup_player(self):
         """メディアプレイヤーをセットアップ"""
@@ -141,6 +194,9 @@ class PreviewWidget(QWidget):
         self.btn_stop.setEnabled(True)
         self.btn_back.setEnabled(True)
         self.btn_forward.setEnabled(True)
+        self.btn_split.setEnabled(True)
+        self.btn_step_back.setEnabled(True)
+        self.btn_step_forward.setEnabled(True)
     
     def play(self):
         """再生"""
@@ -183,7 +239,30 @@ class PreviewWidget(QWidget):
     def _on_stop_clicked(self):
         """停止ボタン"""
         self.stop()
+
+    def _on_split_clicked(self):
+        """ここで分割ボタン"""
+        pos = self.get_position()
+        if pos > 0:
+            self.split_requested.emit(pos)
     
+    def _on_step_back(self):
+        """コマ戻し"""
+        step_sec = self._step_values[self.step_combo.currentIndex()]
+        self.player.pause()
+        self._seek_relative(int(-step_sec * 1000))
+
+    def _on_step_forward(self):
+        """コマ送り"""
+        step_sec = self._step_values[self.step_combo.currentIndex()]
+        self.player.pause()
+        self._seek_relative(int(step_sec * 1000))
+
+    def _on_speed_changed(self, index: int):
+        """再生速度変更"""
+        rate = self._speed_values[index]
+        self.player.setPlaybackRate(rate)
+
     def _on_mute_clicked(self):
         """ミュートトグル"""
         is_muted = self.audio_output.isMuted()
@@ -207,39 +286,13 @@ class PreviewWidget(QWidget):
     
     def _on_position_changed(self, position_ms: int):
         """再生位置変更"""
-        if not self._is_seeking and self._duration_ms > 0:
-            slider_value = int((position_ms / self._duration_ms) * 1000)
-            self.seek_slider.blockSignals(True)
-            self.seek_slider.setValue(slider_value)
-            self.seek_slider.blockSignals(False)
-        
-        # 時間表示を更新
         self._update_time_label(position_ms)
-        
-        # シグナル発行
         self.position_changed.emit(position_ms / 1000.0)
-    
+
     def _on_duration_changed(self, duration_ms: int):
         """動画長さ変更"""
         self._duration_ms = duration_ms
         self._update_time_label(self.player.position())
-    
-    def _on_slider_pressed(self):
-        """スライダー押下"""
-        self._is_seeking = True
-    
-    def _on_slider_released(self):
-        """スライダー解放"""
-        self._is_seeking = False
-        if self._duration_ms > 0:
-            position_ms = int((self.seek_slider.value() / 1000.0) * self._duration_ms)
-            self.player.setPosition(position_ms)
-    
-    def _on_slider_moved(self, value: int):
-        """スライダー移動"""
-        if self._duration_ms > 0:
-            position_ms = int((value / 1000.0) * self._duration_ms)
-            self._update_time_label(position_ms)
     
     def _update_time_label(self, position_ms: int):
         """時間表示を更新"""
@@ -248,13 +301,14 @@ class PreviewWidget(QWidget):
         self.time_label.setText(f"{current} / {total}")
     
     def _format_time(self, ms: int) -> str:
-        """ミリ秒を MM:SS 形式に変換"""
+        """ミリ秒を MM:SS.f 形式に変換"""
+        tenths = (ms % 1000) // 100
         total_sec = ms // 1000
         m, s = divmod(total_sec, 60)
         h, m = divmod(m, 60)
         if h > 0:
-            return f"{h:02d}:{m:02d}:{s:02d}"
-        return f"{m:02d}:{s:02d}"
+            return f"{h:02d}:{m:02d}:{s:02d}.{tenths}"
+        return f"{m:02d}:{s:02d}.{tenths}"
     
     def _on_error(self, error, error_string):
         """エラー発生"""

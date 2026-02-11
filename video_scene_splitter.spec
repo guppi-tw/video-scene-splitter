@@ -34,15 +34,8 @@ hiddenimports = [
     'PySide6.QtCore',
     'PySide6.QtGui',
     'PySide6.QtWidgets',
-    'scenedetect',
-    'scenedetect.detectors',
-    'scenedetect.detectors.content_detector',
-    'scenedetect.video_stream',
-    'scenedetect.scene_manager',
-    'scenedetect.backends',
-    'scenedetect.backends.opencv',
-    'cv2',
-    'numpy',
+    'PySide6.QtMultimedia',
+    'PySide6.QtMultimediaWidgets',
 ]
 
 a = Analysis(
@@ -58,6 +51,9 @@ a = Analysis(
         'tkinter',
         'matplotlib',
         'PIL',
+        'scenedetect',
+        'cv2',
+        'numpy',
     ],
     win_no_prefer_redirects=False,
     win_private_assemblies=False,

@@ -27,8 +27,6 @@ classifiers = [
 
 dependencies = [
     "PySide6>=6.5.0",
-    "scenedetect[opencv]>=0.6.0",
-    "opencv-python>=4.8.0",
 ]
 
 [project.optional-dependencies]
