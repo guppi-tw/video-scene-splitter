@@ -3,10 +3,23 @@ ffmpegによるサムネイル生成・動画分割
 """
 import logging
 import subprocess
+import sys
 import shutil
 from pathlib import Path
 from typing import Callable, Optional
 import platform
+
+
+def _popen_kwargs() -> dict:
+    """Windows でコンソールウィンドウを表示しない Popen 用の kwargs を返す"""
+    kwargs = {}
+    if sys.platform == "win32":
+        startupinfo = subprocess.STARTUPINFO()
+        startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+        startupinfo.wShowWindow = subprocess.SW_HIDE
+        kwargs["startupinfo"] = startupinfo
+        kwargs["creationflags"] = subprocess.CREATE_NO_WINDOW
+    return kwargs
 
 logger = logging.getLogger(__name__)
 
@@ -156,7 +169,8 @@ class FFmpegRunner:
             self._current_process = subprocess.Popen(
                 cmd,
                 stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE
+                stderr=subprocess.PIPE,
+                **_popen_kwargs()
             )
             _, stderr = self._current_process.communicate(timeout=30)
             self._current_process = None
@@ -239,7 +253,8 @@ class FFmpegRunner:
             self._current_process = subprocess.Popen(
                 cmd,
                 stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE
+                stderr=subprocess.PIPE,
+                **_popen_kwargs()
             )
             _, stderr = self._current_process.communicate()
             self._current_process = None
@@ -286,7 +301,8 @@ class FFmpegRunner:
             result = subprocess.run(
                 cmd,
                 capture_output=True,
-                timeout=60
+                timeout=60,
+                **_popen_kwargs()
             )
             # ffmpegはstderrに情報を出力する
             output = result.stderr.decode('utf-8', errors='ignore')
