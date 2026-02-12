@@ -324,14 +324,7 @@ class TimelineWidget(QWidget):
         header_layout.addWidget(self.label_title)
         
         header_layout.addStretch()
-        
-        # 境界追加ボタン
-        self.btn_add = QPushButton("+ 現在位置に境界追加")
-        self.btn_add.setToolTip("再生位置に新しいシーン境界を追加")
-        self.btn_add.clicked.connect(self._on_add_at_playhead)
-        self.btn_add.setEnabled(False)
-        header_layout.addWidget(self.btn_add)
-        
+
         # リセットボタン
         self.btn_reset = QPushButton("リセット")
         self.btn_reset.setToolTip("全ての境界をクリアして元に戻す")
@@ -366,7 +359,6 @@ class TimelineWidget(QWidget):
         self.timeline_bar.set_duration(duration)
         self.timeline_bar.set_boundaries(scene_start_times)
         
-        self.btn_add.setEnabled(True)
         self.btn_reset.setEnabled(True)
     
     def set_playhead(self, position: float):
@@ -409,12 +401,6 @@ class TimelineWidget(QWidget):
             del self.scene_start_times[index]
             self.timeline_bar.set_boundaries(self.scene_start_times)
             self._emit_changes()
-    
-    def _on_add_at_playhead(self):
-        """再生位置に境界を追加"""
-        time = self.timeline_bar.playhead_position
-        if time > 0 and time < self.duration:
-            self._on_boundary_added(time)
     
     def _on_reset(self):
         """元の境界に戻す"""

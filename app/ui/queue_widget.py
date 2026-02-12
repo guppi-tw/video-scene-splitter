@@ -50,13 +50,6 @@ class QueueWidget(QWidget):
 
         layout.addLayout(btn_layout)
 
-        # 編集開始ボタン
-        self.btn_open = QPushButton("編集を開始")
-        self.btn_open.setToolTip("選択した動画を開いて手動で分割編集します (ダブルクリックでも可)")
-        self.btn_open.clicked.connect(self._on_open_video)
-        self.btn_open.setStyleSheet("font-weight: bold; padding: 6px;")
-        layout.addWidget(self.btn_open)
-
         # テーブル
         self.table = QTableWidget()
         self.table.setColumnCount(3)
@@ -73,7 +66,7 @@ class QueueWidget(QWidget):
         layout.addWidget(self.table)
 
         # D&Dヒント
-        self.drop_hint = QLabel("ここにファイルをドラッグ&ドロップ")
+        self.drop_hint = QLabel("D&Dでファイル追加 / ダブルクリックで編集開始")
         self.drop_hint.setAlignment(Qt.AlignCenter)
         self.drop_hint.setStyleSheet("color: #666; font-size: 10px; padding: 4px;")
         layout.addWidget(self.drop_hint)

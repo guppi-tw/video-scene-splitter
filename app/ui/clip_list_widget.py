@@ -146,9 +146,9 @@ class ClipListWidget(QWidget):
         # メタデータバー
         meta_layout = QHBoxLayout()
 
-        meta_layout.addWidget(QLabel("イベント名:"))
+        meta_layout.addWidget(QLabel("ファイル名:"))
         self.event_name_edit = QLineEdit()
-        self.event_name_edit.setPlaceholderText("イベント名")
+        self.event_name_edit.setPlaceholderText("出力ファイルのベース名")
         self.event_name_edit.editingFinished.connect(self._on_default_metadata_changed)
         meta_layout.addWidget(self.event_name_edit, stretch=1)
 
@@ -165,7 +165,7 @@ class ClipListWidget(QWidget):
         meta_layout.addWidget(self.date_edit)
 
         self.btn_apply_all = QPushButton("全体に適用")
-        self.btn_apply_all.setToolTip("イベント名と日付を全クリップに適用")
+        self.btn_apply_all.setToolTip("ファイル名と日付を全クリップに適用")
         self.btn_apply_all.clicked.connect(self._on_apply_all)
         meta_layout.addWidget(self.btn_apply_all)
 
@@ -195,13 +195,11 @@ class ClipListWidget(QWidget):
 
         export_layout.addStretch()
 
-        self.btn_keep_all = QPushButton("全てKeep")
-        self.btn_keep_all.clicked.connect(self._on_keep_all)
-        export_layout.addWidget(self.btn_keep_all)
-
-        self.btn_drop_all = QPushButton("全てDrop")
-        self.btn_drop_all.clicked.connect(self._on_drop_all)
-        export_layout.addWidget(self.btn_drop_all)
+        self.keep_all_check = QCheckBox("全てKeep")
+        self.keep_all_check.setChecked(True)
+        self.keep_all_check.setToolTip("全クリップの Keep/Drop を一括切り替え")
+        self.keep_all_check.stateChanged.connect(self._on_keep_all_toggled)
+        export_layout.addWidget(self.keep_all_check)
 
         self.btn_export = QPushButton("書き出し")
         self.btn_export.setObjectName("btn_export")
@@ -238,10 +236,12 @@ class ClipListWidget(QWidget):
         for scene in self.current_job.scenes:
             row = ClipRow(scene, self.current_job)
             row.preview_requested.connect(self.clip_preview_requested.emit)
+            row.keep_changed.connect(self._on_individual_keep_changed)
             self._clip_rows.append(row)
             self.scroll_layout.addWidget(row)
 
         self.scroll_layout.addStretch()
+        self._sync_keep_all_check()
 
     def update_thumbnail(self, scene_index: int, path: str):
         """特定クリップのサムネイルを更新"""
@@ -280,18 +280,26 @@ class ClipListWidget(QWidget):
 
         self.refresh_clips()
 
-    def _on_keep_all(self):
-        if not self.current_job:
-            return
-        for scene in self.current_job.scenes:
-            scene.keep = True
-        self.refresh_clips()
+    def _on_individual_keep_changed(self, scene_index: int, keep: bool):
+        """個別クリップのKeep変更時に全体チェックボックスを同期"""
+        self._sync_keep_all_check()
 
-    def _on_drop_all(self):
+    def _sync_keep_all_check(self):
+        """全クリップのKeep状態に応じてチェックボックスを更新"""
+        if not self.current_job or not self.current_job.scenes:
+            return
+        # シグナルをブロックして無限ループ防止
+        self.keep_all_check.blockSignals(True)
+        all_kept = all(s.keep for s in self.current_job.scenes)
+        self.keep_all_check.setChecked(all_kept)
+        self.keep_all_check.blockSignals(False)
+
+    def _on_keep_all_toggled(self, state):
         if not self.current_job:
             return
+        keep = state == Qt.Checked.value
         for scene in self.current_job.scenes:
-            scene.keep = False
+            scene.keep = keep
         self.refresh_clips()
 
     def _on_export(self):
