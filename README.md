@@ -1,248 +1,91 @@
 # Video Scene Splitter
 
-家庭用の長尺動画（VHS起こしなど）を、シーン検知・レビュー・分割書き出しまでGUIで行えるローカルアプリケーションです。
+Video Scene Splitter は、長尺の家庭用動画や VHS 取り込み動画をローカル環境で確認しながら、必要な位置で分割して MP4 として書き出すためのデスクトップアプリです。
 
-## 機能
+動画ファイルを外部サービスへアップロードせず、手元の PC 上でプレビュー、タイムライン編集、クリップ管理、書き出しまで行えます。
 
-- **フォルダ/ファイル投入**: MP4ファイルを再帰的に検索してキューに追加
-- **シーン検知**: PySceneDetect（Content Detector）による自動シーン境界検出
-- **ブランク検出**: VHSテープの青画面・グレー画面などの単色部分を自動検出
-- **サムネイル生成**: 各シーンの代表フレームをサムネイルとして表示
-- **レビューUI**: サムネイル一覧でkeep/dropを切り替え、アプリ内プレビュー再生
-- **タイムライン編集**: シーン境界を視覚的に調整（ドラッグで移動、右クリックで追加/削除）
-- **シーン別メタデータ**: 各シーンに個別のイベント名・日付を設定可能
-- **9:55分割書き出し**: 595秒（9分55秒）単位で自動分割してMP4出力
+## Features
 
-## 必要環境
+- MP4 ファイルやフォルダをキューに追加
+- アプリ内プレビュー再生
+- タイムライン上での分割位置の追加、移動、削除
+- クリップごとの keep / drop 切り替え
+- イベント名、日付、ファイル名のメタデータ設定
+- 595 秒単位の自動分割書き出し
+- ffmpeg によるサムネイル生成と MP4 書き出し
+- Windows EXE / macOS アプリ用の PyInstaller ビルドスクリプト
 
-- **Python**: 3.11以上
-- **ffmpeg**: 同梱スクリプトで自動ダウンロード可能（または手動インストール）
+## Requirements
 
-## クイックスタート
+- Python 3.11 or later
+- ffmpeg
+  - `scripts/setup_ffmpeg.py` で `vendor/ffmpeg/` に配置できます
+  - または、システムの PATH にある ffmpeg を使用できます
+
+## Quick Start
 
 ### Windows
 
 ```powershell
-# リポジトリをクローン
 git clone https://github.com/guppi-tw/video-scene-splitter.git
 cd video-scene-splitter
 
-# 仮想環境を作成
 python -m venv venv
 .\venv\Scripts\Activate.ps1
 
-# 依存パッケージをインストール
 pip install -r requirements.txt
-
-# ffmpegをセットアップ（自動ダウンロード）
 python scripts\setup_ffmpeg.py
-
-# アプリを起動
 python -m app
 ```
 
 ### macOS
 
 ```bash
-# リポジトリをクローン
 git clone https://github.com/guppi-tw/video-scene-splitter.git
 cd video-scene-splitter
 
-# 仮想環境を作成
 python3 -m venv venv
 source venv/bin/activate
 
-# 依存パッケージをインストール
 pip install -r requirements.txt
-
-# ffmpegをセットアップ（自動ダウンロード）
 python scripts/setup_ffmpeg.py
-
-# アプリを起動
 python -m app
 ```
 
-## EXEファイルの作成（Windows配布用）
+## Usage
 
-Pythonをインストールしていない環境でも実行できるEXEファイルを作成できます。
+1. 「ファイル追加」または「フォルダ追加」で MP4 をキューに追加します。
+2. キューから動画を開くと、動画全体が 1 つのシーンとして読み込まれます。
+3. プレビューの「ここで分割」ボタン、またはタイムライン操作で分割位置を追加します。
+4. 右側のクリップ一覧で keep / drop、イベント名、日付、ファイル名を調整します。
+5. 「書き出し」から出力先フォルダを選択します。
 
-### 方法1: バッチファイルで簡単ビルド
-
-```powershell
-# build.bat をダブルクリック、または以下を実行
-.\build.bat
-```
-
-### 方法2: 手動ビルド
-
-```powershell
-# 仮想環境を有効化
-.\venv\Scripts\Activate.ps1
-
-# PyInstallerをインストール（初回のみ）
-pip install pyinstaller
-
-# ffmpegをダウンロード（EXEに同梱する場合）
-python scripts\setup_ffmpeg.py
-
-# ビルド実行
-python scripts\build_exe.py
-```
-
-### ビルド出力
-
-```
-dist/
-  VideoSceneSplitter.exe  ← これ1つだけ！
-```
-
-onefileモードでビルドするため、EXEファイル1つに全てが含まれます（約100-200MB）。
-
-## macOSアプリの作成（.app配布用）
-
-macOS用のアプリケーションバンドル（.app）を作成できます。
-
-### 方法1: シェルスクリプトで簡単ビルド
-
-```bash
-# build_mac.command をダブルクリック、または以下を実行
-./build_mac.command
-```
-
-### 方法2: 手動ビルド
-
-```bash
-# 仮想環境を有効化
-source venv/bin/activate
-
-# PyInstallerをインストール（初回のみ）
-pip install pyinstaller
-
-# ffmpegをダウンロード（アプリに同梱する場合）
-python scripts/setup_ffmpeg.py
-
-# ビルド実行
-python scripts/build_mac.py
-```
-
-### ビルド出力
-
-```
-dist/
-  VideoSceneSplitter/
-    VideoSceneSplitter      ← 実行ファイル
-    vendor/
-      ffmpeg/               ← 同梱ffmpeg
-```
-
-### 配布方法
-
-`dist/VideoSceneSplitter` フォルダをZIPに圧縮して配布してください。
-
-**注意**: 
-- Apple Siliconでビルドした場合、Apple Silicon Mac専用になります
-- Intel Macでビルドした場合、Intel Mac専用になります
-- コード署名なしのため、初回起動時に「開発元を確認できない」警告が出ます
-  - 右クリック → 「開く」で回避できます
-
-## ffmpegについて
-
-アプリはffmpegを使用して動画処理を行います。以下の方法でffmpegを用意できます：
-
-### 方法1: 自動ダウンロード（推奨）
-
-```bash
-python scripts/setup_ffmpeg.py
-```
-
-このスクリプトは、お使いのOS（Windows/macOS/Linux）に対応したffmpegバイナリを自動的にダウンロードし、`vendor/ffmpeg/` に配置します。
-
-**対応アーキテクチャ:**
-- Windows: x64
-- macOS: x64, arm64 (Apple Silicon)
-- Linux: x64
-
-### 方法2: 手動インストール
-
-既にffmpegがインストールされている場合、PATHに通っていれば自動的に検出されます。
-
-**Windows:**
-1. [ffmpeg公式サイト](https://ffmpeg.org/download.html)からダウンロード
-2. 解凍してPATHに追加
-
-**macOS (Homebrew):**
-```bash
-brew install ffmpeg
-```
-
-**Ubuntu/Debian:**
-```bash
-sudo apt update && sudo apt install ffmpeg
-```
-
-### ffmpegの検索優先順位
-
-1. `vendor/ffmpeg/` 内の同梱バイナリ（またはEXE/app同梱）
-2. システムPATH上のffmpeg
-3. Windows一般的なパス（`C:/ffmpeg/bin/` など）
-
-## 使い方
-
-### 1. 動画をキューに追加
-
-- **フォルダ追加**: 「フォルダ追加」ボタンでフォルダを選択すると、再帰的にMP4ファイルを検索してキューに追加
-- **ファイル追加**: 「ファイル追加」ボタンで個別のMP4ファイルを追加
-
-### 2. シーン検知設定（オプション）
-
-左側パネルの「シーン検知設定」で調整できます：
-
-| 設定 | 説明 |
-|------|------|
-| **閾値** | 高いほど鈍感（シーン数が減る）。VHS映像は35〜50推奨 |
-| **最小シーン長** | これより短いシーンは無視。VHS映像は5〜10秒推奨 |
-| **ブランク検出** | VHSの青画面・グレー画面などの単色部分を検出 |
-
-プリセット:
-- **標準設定**: 閾値27、最小2秒
-- **VHS向け設定**: 閾値40、最小5秒、ブランク検出ON
-
-### 3. 処理開始
-
-- 「処理開始」ボタンをクリックすると、キュー内の動画を順番に処理
-- シーン検知 → サムネイル生成 の順で処理が進行
-- 処理状況はログエリアとプログレスバーに表示
-
-### 4. レビュー
-
-- 処理完了後、中央のレビューエリアにサムネイル一覧が表示
-- 各シーンの「Keep」チェックボックスで保持/削除を切り替え
-- サムネイルをダブルクリックまたは「▶ プレビュー」ボタンでアプリ内プレビュー再生
-- 各シーンに「イベント名」「日付」を入力可能（空欄は前のシーンから引き継ぎ）
-
-### 5. タイムライン編集
-
-プレビューパネルの下にあるタイムラインで境界を調整できます：
+### Timeline Controls
 
 | 操作 | 動作 |
-|------|------|
-| 境界線をドラッグ | 境界位置を調整 |
-| タイムラインをクリック | その位置にシーク |
+| --- | --- |
+| タイムラインをクリック | その位置へシーク |
+| 境界線をドラッグ | 分割位置を移動 |
 | 空白部分を右クリック | 新しい境界を追加 |
-| 境界線を右クリック | その境界を削除 |
-| 「+ 現在位置に境界追加」 | 再生位置に境界を追加 |
-| 「リセット」 | 元の検知結果に戻す |
+| 境界線を右クリック | 境界を削除 |
+| Ctrl+Z | 直前の境界操作を取り消し |
 
-### 6. 書き出し
+### Keyboard Shortcuts
 
-- 「書き出し」ボタンをクリックして出力先フォルダを選択
-- Keep対象のシーンが595秒（9分55秒）単位で分割されてMP4出力
-- 同じメタデータのシーンは同じフォルダにグループ化
+| キー | 動作 |
+| --- | --- |
+| Space | 再生 / 一時停止 |
+| S | 現在位置で分割 |
+| Left | コマ戻し |
+| Right | コマ送り |
+| Ctrl+Z | 境界操作の取り消し |
 
-## 出力構造
+## Output
 
-```
-出力先フォルダ/
+書き出し時は、keep 対象のシーンがメタデータごとにフォルダ分けされます。自動分割が有効な場合、長いシーンは 595 秒単位に分割されます。
+
+```text
+output/
   2024-05-20_運動会/
     2024-05-20_運動会_001.mp4
     2024-05-20_運動会_002.mp4
@@ -250,114 +93,133 @@ sudo apt update && sudo apt install ffmpeg
     2024-06-15_誕生日会_001.mp4
 ```
 
-## ステータス一覧
+## Building
 
-| ステータス | 説明 |
-|-----------|------|
-| WAITING | 処理待ち |
-| PROCESSING | 処理中（シーン検知/サムネイル生成） |
-| REVIEW | レビュー待ち |
-| DONE | 書き出し完了 |
-| ERROR | エラー発生 |
+### Windows EXE
 
-## 技術スタック
-
-- **言語**: Python 3.11+
-- **GUI**: PySide6 (Qt for Python)
-- **シーン検知**: PySceneDetect
-- **動画処理**: ffmpeg（同梱または外部）
-- **EXEビルド**: PyInstaller
-
-## ディレクトリ構成
-
+```powershell
+.\build.bat
 ```
+
+または手動で実行します。
+
+```powershell
+pip install pyinstaller
+python scripts\setup_ffmpeg.py
+python scripts\build_exe.py
+```
+
+出力:
+
+```text
+dist/
+  VideoSceneSplitter.exe
+```
+
+### macOS App
+
+```bash
+./build_mac.command
+```
+
+または手動で実行します。
+
+```bash
+pip install pyinstaller
+python scripts/setup_ffmpeg.py
+python scripts/build_mac.py
+```
+
+出力:
+
+```text
+dist/
+  VideoSceneSplitter.app
+```
+
+コード署名は行っていないため、初回起動時に macOS の Gatekeeper 警告が出る場合があります。その場合は Finder で右クリックして「開く」を選択してください。
+
+## ffmpeg
+
+このアプリはサムネイル生成、動画の長さ取得、クリップ書き出しに ffmpeg を使用します。
+
+検索優先順位:
+
+1. `vendor/ffmpeg/` 内の同梱バイナリ
+2. システム PATH 上の ffmpeg
+3. Windows の一般的なインストール先
+
+`scripts/setup_ffmpeg.py` は、実行環境に応じた ffmpeg / ffprobe をダウンロードして `vendor/ffmpeg/` に配置します。ダウンロードされる ffmpeg バイナリは、このリポジトリの MIT License とは別に、それぞれの配布元および ffmpeg のライセンス条件に従います。ビルド済みアプリに ffmpeg を同梱して配布する場合は、ffmpeg 側のライセンス表記も確認してください。
+
+## Development
+
+```bash
+python -m venv venv
+source venv/bin/activate
+pip install -r requirements.txt
+pip install -e ".[dev]"
+pytest
+```
+
+## Project Structure
+
+```text
 video-scene-splitter/
-├── app/
-│   ├── __init__.py
-│   ├── __main__.py
-│   ├── main.py
-│   ├── core/
-│   │   ├── __init__.py
-│   │   ├── jobs.py           # ジョブ管理・データモデル
-│   │   ├── scenedetect_runner.py  # シーン検知
-│   │   ├── blank_detector.py # 単色画面検出
-│   │   ├── ffmpeg_runner.py  # ffmpeg操作
-│   │   └── exporter.py       # 分割・書き出し
-│   └── ui/
-│       ├── __init__.py
-│       ├── main_window.py    # メインウィンドウ
-│       ├── queue_widget.py   # キュー表示
-│       ├── review_widget.py  # レビューUI
-│       ├── preview_widget.py # 動画プレビュー
-│       ├── timeline_widget.py # タイムライン編集
-│       ├── log_widget.py     # ログ表示
-│       ├── settings_widget.py # 設定UI
-│       └── workers.py        # バックグラウンドワーカー
-├── scripts/
-│   ├── setup_ffmpeg.py       # ffmpegダウンロードスクリプト
-│   ├── build_exe.py          # Windows EXEビルドスクリプト
-│   └── build_mac.py          # macOSビルドスクリプト
-├── vendor/
-│   └── ffmpeg/               # 同梱ffmpegバイナリ
-├── build.bat                 # Windows用ビルドバッチ
-├── build_mac.command         # macOS用ビルドスクリプト
-├── video_scene_splitter.spec # PyInstaller設定
-├── requirements.txt
-├── pyproject.toml
-└── README.md
+  app/
+    main.py                 # Application entry point
+    core/
+      exporter.py           # Clip calculation and export orchestration
+      ffmpeg_runner.py      # ffmpeg process wrapper
+      jobs.py               # Job, scene, and clip data models
+    ui/
+      main_window.py        # Main window
+      queue_widget.py       # Video queue
+      preview_widget.py     # Video preview
+      timeline_widget.py    # Timeline editor
+      clip_list_widget.py   # Clip list and metadata editor
+      workers.py            # Background workers
+  scripts/
+    setup_ffmpeg.py         # ffmpeg downloader
+    build_exe.py            # Windows build helper
+    build_mac.py            # macOS build helper
+  tests/
+  vendor/ffmpeg/            # Downloaded ffmpeg binaries, ignored by git
 ```
 
-## 注意事項
+## Troubleshooting
 
-- 処理中に「処理停止」ボタンで中断可能（現在のffmpegプロセスを停止）
-- エラーが発生しても次の動画に進める設計
-- 一時ファイル（サムネイル等）はアプリ終了時に自動削除
+### ffmpeg が見つからない
 
-## トラブルシューティング
-
-### ffmpegが見つからない
-
-```
+```text
 RuntimeError: ffmpegが見つかりません。
 ```
 
-以下を試してください：
-1. `python scripts/setup_ffmpeg.py` を実行してffmpegをダウンロード
-2. または手動でffmpegをインストールしてPATHに追加
+以下のどちらかを試してください。
 
-### EXEビルドに失敗する
+```bash
+python scripts/setup_ffmpeg.py
+```
 
-1. 仮想環境が有効になっているか確認
-2. `pip install pyinstaller` を再実行
-3. ウイルス対策ソフトが干渉している場合は一時的に無効化
+または、ffmpeg を手動でインストールして PATH に追加してください。
 
-### macOSでセキュリティ警告が出る
+### macOS で ffmpeg がブロックされる
 
-ダウンロードしたffmpegバイナリやビルドしたアプリを初めて実行する際、macOSのGatekeeperによりブロックされる場合があります。
+ダウンロードした ffmpeg に quarantine 属性が付いている場合があります。
 
-**アプリの場合:**
-1. 右クリック → 「開く」を選択
-2. 「開く」をクリック
-
-**ffmpegの場合:**
-1. システム環境設定 → セキュリティとプライバシー → 一般
-2. 「このまま許可」をクリック
-
-または、ターミナルで以下を実行：
 ```bash
 xattr -d com.apple.quarantine vendor/ffmpeg/ffmpeg
 xattr -d com.apple.quarantine vendor/ffmpeg/ffprobe
 ```
 
-### macOSでビルドしたアプリが起動しない
+### ビルドに失敗する
 
-1. ターミナルから直接実行してエラーメッセージを確認：
-   ```bash
-   ./dist/VideoSceneSplitter/VideoSceneSplitter
-   ```
-2. 依存関係が正しくインストールされているか確認
-3. Apple Silicon Macの場合、Rosetta 2経由で動作している可能性があるため、ネイティブビルドを推奨
+- 仮想環境が有効になっているか確認してください。
+- `pip install -r requirements.txt` を再実行してください。
+- PyInstaller がない場合は `pip install pyinstaller` を実行してください。
+- ffmpeg 同梱が必要な場合は、先に `python scripts/setup_ffmpeg.py` を実行してください。
 
-## ライセンス
+## License
 
-MIT License
+This project is licensed under the MIT License. See [LICENSE](LICENSE) for details.
+
+ffmpeg is not developed by this project. When downloading, bundling, or redistributing ffmpeg binaries, follow the licenses and notices required by ffmpeg and the binary distributor.
