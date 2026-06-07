@@ -1,0 +1,50 @@
+rules:
+  - id: local.nextauth-no-hardcoded-fallback-secret
+    languages: [javascript, typescript]
+    severity: ERROR
+    message: Do not use a hard-coded fallback secret for Auth.js/NextAuth. Fail closed outside local development and require a deployment secret.
+    patterns:
+      - pattern-either:
+          - pattern: |
+              {
+                ..., secret: $SECRET ?? "$FALLBACK", ...
+              }
+          - pattern: |
+              {
+                ..., secret: $SECRET || "$FALLBACK", ...
+              }
+    metadata:
+      category: security
+      cwe: "CWE-798: Use of Hard-coded Credentials"
+
+  - id: local.jszip-string-read-needs-expanded-size-limit
+    languages: [javascript, typescript]
+    severity: WARNING
+    message: Reading a ZIP entry as a string can materialize highly compressed attacker-controlled data. Check per-entry and total expanded sizes before this call.
+    pattern: await $ENTRY.async("string")
+    metadata:
+      category: security
+      cwe: "CWE-400: Uncontrolled Resource Consumption"
+
+  - id: local.python-subprocess-shell-true
+    languages: [python]
+    severity: ERROR
+    message: Avoid subprocess shell=True with attacker-influenced input. Pass argv arrays with shell disabled.
+    pattern-either:
+      - pattern: subprocess.run(..., shell=True, ...)
+      - pattern: subprocess.Popen(..., shell=True, ...)
+      - pattern: subprocess.call(..., shell=True, ...)
+    metadata:
+      category: security
+      cwe: "CWE-78: OS Command Injection"
+
+  - id: local.node-child-process-exec-review
+    languages: [javascript, typescript]
+    severity: WARNING
+    message: Review child_process.exec usage. Prefer execFile/spawn with argv arrays unless shell parsing is explicitly required and inputs are trusted.
+    pattern-either:
+      - pattern: child_process.exec($CMD, ...)
+      - pattern: exec($CMD, ...)
+    metadata:
+      category: security
+      cwe: "CWE-78: OS Command Injection"

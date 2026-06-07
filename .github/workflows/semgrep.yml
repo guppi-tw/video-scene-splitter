@@ -1,0 +1,36 @@
+name: Semgrep
+
+on:
+  pull_request: {}
+  workflow_dispatch: {}
+  push:
+    branches: ["main", "master", "dev"]
+  schedule:
+    - cron: "7 4 * * 2"
+
+permissions:
+  contents: read
+
+jobs:
+  semgrep:
+    name: semgrep-ce
+    runs-on: ubuntu-latest
+    container:
+      image: semgrep/semgrep
+    if: github.actor != 'dependabot[bot]'
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run Semgrep CE
+        run: >
+          semgrep scan
+          --config auto
+          --config .semgrep.yml
+          --metrics=off
+          --exclude node_modules
+          --exclude .next
+          --exclude .open-next
+          --exclude dist
+          --exclude build
+          --exclude .wrangler
+          --exclude DerivedData
