@@ -101,14 +101,15 @@ class ExportWorker(QObject):
             success_count = 0
             current_clip_num = 0
 
-            for (event_name, event_date), group_clips in clips_by_metadata.items():
+            for (event_name, event_date, is_sensitive), group_clips in clips_by_metadata.items():
                 if self._cancelled:
                     self.progress.emit("キャンセルされました")
                     return
 
                 # 出力ディレクトリを作成
-                folder_name = self.job.get_output_folder_name(event_name, event_date)
-                output_dir = self.output_dir / folder_name
+                output_dir = self.job.get_output_dir(
+                    self.output_dir, event_name, event_date, is_sensitive
+                )
                 output_dir.mkdir(parents=True, exist_ok=True)
 
                 self.progress.emit(f"出力先: {output_dir}")

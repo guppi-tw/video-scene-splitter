@@ -30,10 +30,10 @@ class Exporter:
         # メタデータでグループ化されたシーンを取得
         groups = job.get_scenes_grouped_by_metadata()
         
-        for event_name, event_date, scenes in groups:
+        for event_name, event_date, is_sensitive, scenes in groups:
             # グループ内でクリップを生成
             group_clips = self._calculate_clips_for_group(
-                scenes, event_name, event_date
+                scenes, event_name, event_date, is_sensitive
             )
             all_clips.extend(group_clips)
         
@@ -43,7 +43,8 @@ class Exporter:
         self,
         scenes: List[Scene],
         event_name: str,
-        event_date: Optional[date]
+        event_date: Optional[date],
+        is_sensitive: bool
     ) -> List[Clip]:
         """
         同じメタデータを持つシーングループからクリップを計算
@@ -53,7 +54,7 @@ class Exporter:
         
         for scene in scenes:
             scene_clips = self._split_scene_to_clips(
-                scene, clip_index, event_name, event_date
+                scene, clip_index, event_name, event_date, is_sensitive
             )
             clips.extend(scene_clips)
             clip_index += len(scene_clips)
@@ -72,7 +73,8 @@ class Exporter:
         scene: Scene,
         start_index: int,
         event_name: str,
-        event_date: Optional[date]
+        event_date: Optional[date],
+        is_sensitive: bool = False
     ) -> list[Clip]:
         """シーンを595秒単位で分割（auto_split=Falseの場合は分割しない）"""
         if not self.auto_split:
@@ -83,6 +85,7 @@ class Exporter:
                 source_scene_indices=[scene.index],
                 event_name=event_name,
                 event_date=event_date,
+                is_sensitive=is_sensitive,
                 filename_override=scene.filename_override
             )
             return [clip]
@@ -102,7 +105,8 @@ class Exporter:
                     end_time=scene.end_time,
                     source_scene_indices=[scene.index],
                     event_name=event_name,
-                    event_date=event_date
+                    event_date=event_date,
+                    is_sensitive=is_sensitive
                 )
                 clips.append(clip)
                 break
@@ -114,7 +118,8 @@ class Exporter:
                     end_time=current_start + self.MAX_CLIP_DURATION,
                     source_scene_indices=[scene.index],
                     event_name=event_name,
-                    event_date=event_date
+                    event_date=event_date,
+                    is_sensitive=is_sensitive
                 )
                 clips.append(clip)
                 current_start += self.MAX_CLIP_DURATION
@@ -182,10 +187,11 @@ class Exporter:
         success_count = 0
         current_clip_num = 0
         
-        for (event_name, event_date), group_clips in clips_by_metadata.items():
+        for (event_name, event_date, is_sensitive), group_clips in clips_by_metadata.items():
             # 出力ディレクトリを作成
-            folder_name = job.get_output_folder_name(event_name, event_date)
-            output_dir = output_base_dir / folder_name
+            output_dir = job.get_output_dir(
+                output_base_dir, event_name, event_date, is_sensitive
+            )
             output_dir.mkdir(parents=True, exist_ok=True)
             
             if progress_callback:

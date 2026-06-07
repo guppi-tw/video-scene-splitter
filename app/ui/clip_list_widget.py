@@ -19,6 +19,7 @@ class ClipRow(QFrame):
     """クリップ1行分の表示"""
 
     keep_changed = Signal(int, bool)  # scene_index, keep
+    sensitive_changed = Signal(int, bool)  # scene_index, is_sensitive
     filename_changed = Signal(int, str)  # scene_index, filename
     preview_requested = Signal(float)  # start_time
 
@@ -82,6 +83,14 @@ class ClipRow(QFrame):
 
         layout.addLayout(info_layout, stretch=1)
 
+        # 要注意チェックボックス
+        self.sensitive_check = QCheckBox("要注意")
+        self.sensitive_check.setToolTip("クラウド共有前に確認したいクリップを別フォルダへ書き出します")
+        self.sensitive_check.setChecked(self.scene.is_sensitive)
+        self.sensitive_check.setEnabled(self.scene.keep)
+        self.sensitive_check.stateChanged.connect(self._on_sensitive_changed)
+        layout.addWidget(self.sensitive_check)
+
         # Keep/Dropチェックボックス
         self.keep_check = QCheckBox("Keep")
         self.keep_check.setChecked(self.scene.keep)
@@ -103,7 +112,14 @@ class ClipRow(QFrame):
         self.scene.keep = keep
         self._update_style()
         self.filename_edit.setEnabled(keep)
+        self.sensitive_check.setEnabled(keep)
         self.keep_changed.emit(self.scene.index, keep)
+
+    def _on_sensitive_changed(self, state):
+        is_sensitive = state == Qt.Checked.value
+        self.scene.is_sensitive = is_sensitive
+        self._update_style()
+        self.sensitive_changed.emit(self.scene.index, is_sensitive)
 
     def _on_filename_changed(self):
         text = self.filename_edit.text().strip()
@@ -111,7 +127,9 @@ class ClipRow(QFrame):
         self.filename_changed.emit(self.scene.index, text)
 
     def _update_style(self):
-        if self.scene.keep:
+        if self.scene.keep and self.scene.is_sensitive:
+            self.setStyleSheet("ClipRow { background-color: #3a3320; }")
+        elif self.scene.keep:
             self.setStyleSheet("ClipRow { background-color: #2a3a2a; }")
         else:
             self.setStyleSheet("ClipRow { background-color: #3a2a2a; }")
@@ -237,6 +255,7 @@ class ClipListWidget(QWidget):
             row = ClipRow(scene, self.current_job)
             row.preview_requested.connect(self.clip_preview_requested.emit)
             row.keep_changed.connect(self._on_individual_keep_changed)
+            row.sensitive_changed.connect(self._on_individual_sensitive_changed)
             self._clip_rows.append(row)
             self.scroll_layout.addWidget(row)
 
@@ -284,6 +303,11 @@ class ClipListWidget(QWidget):
         """個別クリップのKeep変更時に全体チェックボックスを同期"""
         self._sync_keep_all_check()
 
+    def _on_individual_sensitive_changed(self, scene_index: int, is_sensitive: bool):
+        """個別クリップの要注意変更"""
+        if not self.current_job:
+            return
+
     def _sync_keep_all_check(self):
         """全クリップのKeep状態に応じてチェックボックスを更新"""
         if not self.current_job or not self.current_job.scenes:
@@ -311,6 +335,7 @@ class ClipListWidget(QWidget):
         if not kept:
             QMessageBox.warning(self, "警告", "Keep対象のクリップがありません")
             return
+        sensitive_count = sum(1 for s in kept if s.is_sensitive)
 
         output_dir = QFileDialog.getExistingDirectory(self, "出力先フォルダを選択")
         if not output_dir:
@@ -320,7 +345,9 @@ class ClipListWidget(QWidget):
             self,
             "書き出し確認",
             f"Keepクリップ: {len(kept)}個\n"
+            f"要注意クリップ: {sensitive_count}個\n"
             f"出力先: {output_dir}\n\n"
+            f"要注意クリップは sensitive フォルダへ分けて出力されます。\n"
             f"書き出しを開始しますか？",
             QMessageBox.Yes | QMessageBox.No
         )

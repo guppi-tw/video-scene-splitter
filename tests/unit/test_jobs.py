@@ -59,8 +59,8 @@ class TestGroupClipsByMetadata:
         ]
         result = group_clips_by_metadata(clips)
         assert len(result) == 1
-        assert ("運動会", date(2024, 5, 20)) in result
-        assert len(result[("運動会", date(2024, 5, 20))]) == 1
+        assert ("運動会", date(2024, 5, 20), False) in result
+        assert len(result[("運動会", date(2024, 5, 20), False)]) == 1
 
     def test_multiple_clips_same_metadata(self):
         """同じメタデータを持つ複数のクリップ"""
@@ -70,7 +70,7 @@ class TestGroupClipsByMetadata:
         ]
         result = group_clips_by_metadata(clips)
         assert len(result) == 1
-        assert len(result[("運動会", date(2024, 5, 20))]) == 2
+        assert len(result[("運動会", date(2024, 5, 20), False)]) == 2
 
     def test_multiple_clips_different_metadata(self):
         """異なるメタデータを持つ複数のクリップ"""
@@ -80,8 +80,8 @@ class TestGroupClipsByMetadata:
         ]
         result = group_clips_by_metadata(clips)
         assert len(result) == 2
-        assert ("運動会", date(2024, 5, 20)) in result
-        assert ("誕生日会", date(2024, 6, 15)) in result
+        assert ("運動会", date(2024, 5, 20), False) in result
+        assert ("誕生日会", date(2024, 6, 15), False) in result
 
     def test_clip_without_event_name(self):
         """イベント名がない場合は空文字として扱われる"""
@@ -89,7 +89,18 @@ class TestGroupClipsByMetadata:
             Clip(index=1, start_time=0.0, end_time=100.0, event_name="", event_date=date(2024, 5, 20)),
         ]
         result = group_clips_by_metadata(clips)
-        assert ("", date(2024, 5, 20)) in result
+        assert ("", date(2024, 5, 20), False) in result
+
+    def test_sensitive_clip_uses_separate_group(self):
+        """要注意フラグが違うクリップは別グループになる"""
+        clips = [
+            Clip(index=1, start_time=0.0, end_time=100.0, event_name="プール", is_sensitive=False),
+            Clip(index=2, start_time=100.0, end_time=200.0, event_name="プール", is_sensitive=True),
+        ]
+        result = group_clips_by_metadata(clips)
+        assert len(result) == 2
+        assert ("プール", None, False) in result
+        assert ("プール", None, True) in result
 
 
 class TestVideoJob:
@@ -180,6 +191,27 @@ class TestVideoJob:
         clip = Clip(index=1, start_time=0.0, end_time=100.0, event_name="運動会", event_date=date(2024, 5, 20))
         filename = job.get_clip_filename(clip)
         assert filename == "2024-05-20_運動会_001.mp4"
+
+    def test_get_output_dir_sensitive(self):
+        """要注意クリップは sensitive 配下へ出力される"""
+        job = VideoJob(id=1, source_path=Path("/path/to/video.mp4"))
+        output_dir = job.get_output_dir(
+            Path("/output"), "プール", date(2024, 8, 1), is_sensitive=True
+        )
+        assert output_dir == Path("/output/sensitive/2024-08-01_プール")
+
+    def test_rebuild_scenes_preserves_sensitive_flag(self):
+        """境界再構築時に要注意フラグを引き継ぐ"""
+        job = VideoJob(id=1, source_path=Path("/path/to/video.mp4"))
+        job.scenes = [
+            Scene(index=1, start_time=0.0, end_time=10.0, is_sensitive=True),
+            Scene(index=2, start_time=10.0, end_time=20.0, is_sensitive=False),
+        ]
+
+        job.rebuild_scenes_from_boundaries([0.0, 10.0], 20.0)
+
+        assert job.scenes[0].is_sensitive is True
+        assert job.scenes[1].is_sensitive is False
 
 
 class TestJobQueue:

@@ -112,6 +112,28 @@ class TestCalculateClips(TestExporter):
         assert clips[0].event_name == "運動会"
         assert clips[0].event_date == date(2024, 6, 1)
 
+    def test_sensitive_scene_flag_is_copied_to_clip(self, exporter, sample_job):
+        """要注意フラグがクリップに反映される"""
+        sample_job.scenes = [
+            Scene(index=1, start_time=0.0, end_time=100.0, keep=True, is_sensitive=True),
+        ]
+        clips = exporter.calculate_clips(sample_job)
+
+        assert len(clips) == 1
+        assert clips[0].is_sensitive is True
+
+    def test_sensitive_scenes_are_separate_groups(self, exporter, sample_job):
+        """同じイベントでも要注意フラグが違えば別クリップグループになる"""
+        sample_job.scenes = [
+            Scene(index=1, start_time=0.0, end_time=100.0, keep=True, event_name="プール"),
+            Scene(index=2, start_time=100.0, end_time=200.0, keep=True, event_name="プール", is_sensitive=True),
+        ]
+        clips = exporter.calculate_clips(sample_job)
+
+        assert len(clips) == 2
+        assert clips[0].is_sensitive is False
+        assert clips[1].is_sensitive is True
+
 
 class TestSplitSceneToClips(TestExporter):
     """_split_scene_to_clipsメソッドのテスト"""
@@ -193,3 +215,19 @@ class TestMergeShortRemainders(TestExporter):
         """空のリストの場合"""
         result = exporter._merge_short_remainders([])
         assert len(result) == 0
+
+
+class TestExport(TestExporter):
+    """exportメソッドのテスト"""
+
+    def test_sensitive_clip_exports_under_sensitive_folder(self, exporter, mock_ffmpeg, sample_job, tmp_path):
+        """要注意クリップは sensitive フォルダ配下に書き出される"""
+        mock_ffmpeg.extract_clip.return_value = True
+        sample_job.scenes = [
+            Scene(index=1, start_time=0.0, end_time=100.0, keep=True, is_sensitive=True),
+        ]
+
+        assert exporter.export(sample_job, tmp_path) is True
+
+        output_path = mock_ffmpeg.extract_clip.call_args.kwargs["output_path"]
+        assert output_path.parent == tmp_path / "sensitive" / "2024-05-20_テストイベント"

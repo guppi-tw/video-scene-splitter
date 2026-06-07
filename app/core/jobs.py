@@ -11,7 +11,7 @@ if TYPE_CHECKING:
     from app.core.jobs import Clip
 
 # 型エイリアス
-MetadataKey = Tuple[str, Optional[date]]
+MetadataKey = Tuple[str, Optional[date], bool]
 
 
 class JobStatus(Enum):
@@ -30,6 +30,7 @@ class Scene:
     end_time: float    # 秒
     thumbnail_path: Optional[Path] = None
     keep: bool = True
+    is_sensitive: bool = False
     
     # シーン別メタデータ（Noneの場合は前のシーンから引き継ぎ）
     event_name: Optional[str] = None  # イベント名（Noneで引き継ぎ）
@@ -57,6 +58,7 @@ class Clip:
     source_scene_indices: list[int] = field(default_factory=list)
     event_name: str = ""  # このクリップのイベント名
     event_date: Optional[date] = None  # このクリップの日付
+    is_sensitive: bool = False
     output_path: Optional[Path] = None
     filename_override: Optional[str] = None  # ファイル名の直接指定
 
@@ -69,18 +71,18 @@ def group_clips_by_metadata(
     clips: List[Clip]
 ) -> Dict[MetadataKey, List[Clip]]:
     """
-    クリップをメタデータ（イベント名、日付）でグループ化
+    クリップをメタデータ（イベント名、日付、要注意フラグ）でグループ化
 
     Args:
         clips: グループ化するクリップのリスト
 
     Returns:
-        {(event_name, event_date): [clips]} の辞書
+        {(event_name, event_date, is_sensitive): [clips]} の辞書
     """
     groups: Dict[MetadataKey, List[Clip]] = {}
 
     for clip in clips:
-        key: MetadataKey = (clip.event_name or "", clip.event_date)
+        key: MetadataKey = (clip.event_name or "", clip.event_date, clip.is_sensitive)
         if key not in groups:
             groups[key] = []
         groups[key].append(clip)
@@ -134,34 +136,40 @@ class VideoJob:
         
         return current_name, current_date
     
-    def get_scenes_grouped_by_metadata(self) -> List[Tuple[str, Optional[date], List['Scene']]]:
+    def get_scenes_grouped_by_metadata(self) -> List[Tuple[str, Optional[date], bool, List['Scene']]]:
         """
         メタデータでグループ化されたシーンリストを取得
         
         Returns:
-            [(event_name, event_date, [scenes]), ...]
+            [(event_name, event_date, is_sensitive, [scenes]), ...]
         """
         groups = []
         current_name = self.default_event_name
         current_date = self.default_event_date
+        current_sensitive = False
         current_scenes = []
         
         for scene in self.kept_scenes:
             # メタデータが変わったら新しいグループを開始
             scene_name, scene_date = self.get_scene_metadata(scene.index)
             
-            if current_scenes and (scene_name != current_name or scene_date != current_date):
+            if current_scenes and (
+                scene_name != current_name
+                or scene_date != current_date
+                or scene.is_sensitive != current_sensitive
+            ):
                 # 前のグループを保存
-                groups.append((current_name, current_date, current_scenes))
+                groups.append((current_name, current_date, current_sensitive, current_scenes))
                 current_scenes = []
             
             current_name = scene_name
             current_date = scene_date
+            current_sensitive = scene.is_sensitive
             current_scenes.append(scene)
         
         # 最後のグループを追加
         if current_scenes:
-            groups.append((current_name, current_date, current_scenes))
+            groups.append((current_name, current_date, current_sensitive, current_scenes))
         
         return groups
     
@@ -218,6 +226,7 @@ class VideoJob:
                     scene.event_name = old_scene.event_name
                     scene.event_date = old_scene.event_date
                     scene.keep = old_scene.keep
+                    scene.is_sensitive = old_scene.is_sensitive
                     scene.thumbnail_path = old_scene.thumbnail_path
                     scene.filename_override = old_scene.filename_override
                     break
@@ -232,6 +241,19 @@ class VideoJob:
         d = event_date or self.default_event_date
         date_str = d.strftime("%Y-%m-%d") if d else "unknown"
         return f"{date_str}_{name}"
+
+    def get_output_dir(
+        self,
+        output_base_dir: Path,
+        event_name: str = None,
+        event_date: date = None,
+        is_sensitive: bool = False,
+    ) -> Path:
+        """出力ディレクトリを生成。要注意クリップは sensitive 配下へ分離する。"""
+        folder_name = self.get_output_folder_name(event_name, event_date)
+        if is_sensitive:
+            return output_base_dir / "sensitive" / folder_name
+        return output_base_dir / folder_name
     
     def get_clip_filename(self, clip: Clip) -> str:
         """クリップファイル名を生成"""
