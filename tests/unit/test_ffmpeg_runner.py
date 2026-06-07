@@ -24,10 +24,16 @@ def test_get_bundled_ffmpeg_path_finds_source_vendor_binary(tmp_path, monkeypatc
 
 
 def test_get_bundled_ffmpeg_path_finds_pyinstaller_vendor_binary(tmp_path, monkeypatch):
+    project_root = tmp_path / "project"
+    module_path = project_root / "app" / "core" / "ffmpeg_runner.py"
+    module_path.parent.mkdir(parents=True, exist_ok=True)
+    module_path.write_text("", encoding="utf-8")
+
     meipass = tmp_path / "VideoSceneSplitter.app" / "Contents" / "Frameworks"
     bundled_ffmpeg = meipass / "vendor" / "ffmpeg" / "ffmpeg"
     _touch_executable(bundled_ffmpeg)
 
+    monkeypatch.setattr(ffmpeg_runner, "__file__", str(module_path))
     monkeypatch.setattr(ffmpeg_runner.sys, "frozen", True, raising=False)
     monkeypatch.setattr(ffmpeg_runner.sys, "_MEIPASS", str(meipass), raising=False)
     monkeypatch.setattr(
