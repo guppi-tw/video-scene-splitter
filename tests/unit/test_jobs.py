@@ -249,6 +249,45 @@ class TestJobQueue:
         assert job2 is None
         assert len(queue.get_all_jobs()) == 1
 
+    def test_add_files_respects_batch_limit(self, tmp_path):
+        """一括追加は上限までしか追加されない"""
+        queue = JobQueue()
+        files = []
+        for i in range(3):
+            video_file = tmp_path / f"video{i}.mp4"
+            video_file.touch()
+            files.append(video_file)
+
+        result = queue.add_files(files, limit=2)
+
+        assert len(result.added) == 2
+        assert result.skipped_limit == 1
+        assert len(queue.get_all_jobs()) == 2
+
+    def test_add_files_reports_duplicates(self, tmp_path):
+        """一括追加は重複を結果に含める"""
+        queue = JobQueue()
+        video_file = tmp_path / "video.mp4"
+        video_file.touch()
+        queue.add_file(video_file)
+
+        result = queue.add_files([video_file], limit=10)
+
+        assert result.added == []
+        assert result.skipped_duplicate_or_invalid == 1
+
+    def test_add_folder_respects_batch_limit_and_uppercase_mp4(self, tmp_path):
+        """フォルダ追加は上限を守り、.MP4も対象にする"""
+        queue = JobQueue()
+        for name in ["a.mp4", "b.MP4", "c.mp4"]:
+            (tmp_path / name).touch()
+
+        result = queue.add_folder(tmp_path, limit=2)
+
+        assert len(result.added) == 2
+        assert result.skipped_limit == 1
+        assert len(queue.get_all_jobs()) == 2
+
     def test_get_next_waiting(self, tmp_path):
         """次の待機中ジョブの取得"""
         queue = JobQueue()

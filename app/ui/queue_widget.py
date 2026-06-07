@@ -1,14 +1,16 @@
 """
 キュー表示ウィジェット
 """
+from pathlib import Path
+
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QPushButton,
     QTableWidget, QTableWidgetItem, QHeaderView,
-    QFileDialog, QAbstractItemView, QLabel
+    QFileDialog, QAbstractItemView, QLabel, QMessageBox
 )
 from PySide6.QtCore import Signal, Qt
 
-from app.core import JobQueue, VideoJob, JobStatus
+from app.core import AddBatchResult, JobQueue, VideoJob, JobStatus
 
 
 class QueueWidget(QWidget):
@@ -80,30 +82,57 @@ class QueueWidget(QWidget):
             event.acceptProposedAction()
 
     def dropEvent(self, event):
-        from pathlib import Path
+        paths = []
         for url in event.mimeData().urls():
             path = Path(url.toLocalFile())
             if path.is_file() and path.suffix.lower() == '.mp4':
-                self.job_queue.add_file(path)
+                paths.append(path)
             elif path.is_dir():
-                self.job_queue.add_folder(path)
+                paths.extend(self._collect_mp4_paths(path))
+        result = self.job_queue.add_files(paths)
         self.refresh()
+        self._show_add_result(result)
 
     def _on_add_folder(self):
         folder = QFileDialog.getExistingDirectory(self, "フォルダを選択")
         if folder:
-            from pathlib import Path
-            self.job_queue.add_folder(Path(folder))
+            result = self.job_queue.add_folder(Path(folder))
             self.refresh()
+            self._show_add_result(result)
 
     def _on_add_file(self):
         files, _ = QFileDialog.getOpenFileNames(
             self, "ファイルを選択", "", "MP4 Files (*.mp4)"
         )
-        for f in files:
-            from pathlib import Path
-            self.job_queue.add_file(Path(f))
+        result = self.job_queue.add_files([Path(f) for f in files])
         self.refresh()
+        self._show_add_result(result)
+
+    def _collect_mp4_paths(self, folder: Path) -> list[Path]:
+        return sorted(
+            path for path in folder.rglob("*")
+            if path.is_file() and path.suffix.lower() == ".mp4"
+        )
+
+    def _show_add_result(self, result: AddBatchResult):
+        if result.requested_count == 0:
+            return
+
+        if result.was_limited:
+            QMessageBox.warning(
+                self,
+                "読み込み上限",
+                f"一度に追加できる動画は {result.limit} 本までです。\n"
+                f"追加: {len(result.added)} 本\n"
+                f"上限超過でスキップ: {result.skipped_limit} 本\n"
+                f"重複または対象外: {result.skipped_duplicate_or_invalid} 本"
+            )
+        elif not result.added:
+            QMessageBox.information(
+                self,
+                "追加なし",
+                "追加できる新しい MP4 ファイルがありませんでした。"
+            )
 
     def _on_remove(self):
         row = self.table.currentRow()

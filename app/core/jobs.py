@@ -23,6 +23,23 @@ class JobStatus(Enum):
 
 
 @dataclass
+class AddBatchResult:
+    """一括追加の結果"""
+    added: list["VideoJob"] = field(default_factory=list)
+    skipped_limit: int = 0
+    skipped_duplicate_or_invalid: int = 0
+    limit: Optional[int] = None
+
+    @property
+    def requested_count(self) -> int:
+        return len(self.added) + self.skipped_limit + self.skipped_duplicate_or_invalid
+
+    @property
+    def was_limited(self) -> bool:
+        return self.skipped_limit > 0
+
+
+@dataclass
 class Scene:
     """シーン情報"""
     index: int
@@ -272,6 +289,7 @@ class VideoJob:
 
 class JobQueue:
     """ジョブキュー管理"""
+    MAX_BATCH_ADD_FILES = 100
     
     def __init__(self):
         self._jobs: list[VideoJob] = []
@@ -291,19 +309,47 @@ class JobQueue:
         self._next_id += 1
         self._jobs.append(job)
         return job
-    
-    def add_folder(self, folder: Path) -> list[VideoJob]:
-        """フォルダから再帰的にmp4を追加"""
-        added = []
-        if not folder.is_dir():
-            return added
-        
-        for mp4_path in sorted(folder.rglob("*.mp4")):
-            job = self.add_file(mp4_path)
+
+    def add_files(
+        self,
+        paths: List[Path],
+        limit: Optional[int] = None
+    ) -> AddBatchResult:
+        """複数ファイルを上限付きでキューに追加"""
+        effective_limit = self.MAX_BATCH_ADD_FILES if limit is None else limit
+        result = AddBatchResult(limit=effective_limit)
+        candidates = [path for path in paths if path.is_file() and path.suffix.lower() == ".mp4"]
+        limited_candidates = candidates[:effective_limit]
+        result.skipped_limit = max(0, len(candidates) - len(limited_candidates))
+
+        for path in limited_candidates:
+            job = self.add_file(path)
             if job:
-                added.append(job)
+                result.added.append(job)
+            else:
+                result.skipped_duplicate_or_invalid += 1
+
+        result.skipped_duplicate_or_invalid += len(paths) - len(candidates)
+        return result
+    
+    def add_folder(
+        self,
+        folder: Path,
+        limit: Optional[int] = None
+    ) -> AddBatchResult:
+        """フォルダから再帰的にmp4を上限付きで追加"""
+        result = AddBatchResult(
+            limit=self.MAX_BATCH_ADD_FILES if limit is None else limit
+        )
+        if not folder.is_dir():
+            result.skipped_duplicate_or_invalid = 1
+            return result
         
-        return added
+        mp4_paths = sorted(
+            path for path in folder.rglob("*")
+            if path.is_file() and path.suffix.lower() == ".mp4"
+        )
+        return self.add_files(mp4_paths, limit=result.limit)
     
     def get_all_jobs(self) -> list[VideoJob]:
         return self._jobs.copy()
