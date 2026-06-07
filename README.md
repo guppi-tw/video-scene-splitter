@@ -49,9 +49,19 @@ python -m app
 ```bash
 git clone https://github.com/guppi-tw/video-scene-splitter.git
 cd video-scene-splitter
+./run_mac.command
+```
 
-python3 -m venv venv
-source venv/bin/activate
+`run_mac.command` は Python 3.11 以上を探し、必要に応じて `.venv-macos` を作成して依存パッケージと ffmpeg をセットアップしてからアプリを起動します。
+
+手動で起動する場合:
+
+```bash
+git clone https://github.com/guppi-tw/video-scene-splitter.git
+cd video-scene-splitter
+
+python3.11 -m venv .venv
+source .venv/bin/activate
 
 pip install -r requirements.txt
 python scripts/setup_ffmpeg.py
@@ -127,6 +137,8 @@ dist/
 ```bash
 ./build_mac.command
 ```
+
+`build_mac.command` も Python 3.11 以上を探し、必要に応じて `.venv-macos` を作成してから `VideoSceneSplitter.app` をビルドします。
 
 または手動で実行します。
 

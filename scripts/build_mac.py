@@ -9,6 +9,19 @@ import shutil
 import platform
 from pathlib import Path
 
+MIN_PYTHON = (3, 11)
+
+
+def check_python_version():
+    """Python 3.11以上で実行されているか確認"""
+    if sys.version_info < MIN_PYTHON:
+        required = ".".join(str(part) for part in MIN_PYTHON)
+        current = platform.python_version()
+        print(f"エラー: Python {required} 以上が必要です")
+        print(f"現在のPython: {current}")
+        print("macOSでは run_mac.command / build_mac.command を使うと対応するPythonを自動検出します")
+        sys.exit(1)
+
 
 def check_platform():
     """macOSで実行されているか確認"""
@@ -88,7 +101,7 @@ def build_app(project_root: Path, arch: str):
     ffmpeg_dir = project_root / "vendor" / "ffmpeg"
     add_data_args = []
     
-    if ffmpeg_dir.exists():
+    if (ffmpeg_dir / "ffmpeg").exists() and (ffmpeg_dir / "ffprobe").exists():
         # macOSでは : をセパレータとして使用
         add_data_args.extend([
             "--add-data", f"{ffmpeg_dir}:vendor/ffmpeg"
@@ -109,11 +122,6 @@ def build_app(project_root: Path, arch: str):
         "--hidden-import", "PySide6.QtWidgets",
         "--hidden-import", "PySide6.QtMultimedia",
         "--hidden-import", "PySide6.QtMultimediaWidgets",
-        "--hidden-import", "scenedetect",
-        "--hidden-import", "scenedetect.detectors",
-        "--hidden-import", "scenedetect.detectors.content_detector",
-        "--hidden-import", "cv2",
-        "--hidden-import", "numpy",
         # パス追加
         "--paths", str(project_root),
         # ターゲットアーキテクチャ
@@ -168,6 +176,9 @@ def main():
     print("=" * 50)
     print("Video Scene Splitter - macOS ビルド")
     print("=" * 50)
+
+    # Pythonバージョン確認
+    check_python_version()
     
     # プラットフォーム確認
     arch = check_platform()

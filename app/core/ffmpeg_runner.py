@@ -24,6 +24,58 @@ def _popen_kwargs() -> dict:
 logger = logging.getLogger(__name__)
 
 
+def _binary_name(base_name: str) -> str:
+    """Return the platform-specific executable name."""
+    if platform.system() == "Windows":
+        return f"{base_name}.exe"
+    return base_name
+
+
+def _project_root() -> Path:
+    # app/core/ffmpeg_runner.py -> app/core -> app -> project_root
+    return Path(__file__).resolve().parent.parent.parent
+
+
+def _pyinstaller_roots() -> list[Path]:
+    """Return likely PyInstaller data roots for onefile, onedir, and macOS .app builds."""
+    roots: list[Path] = []
+
+    if getattr(sys, "frozen", False):
+        executable_dir = Path(sys.executable).resolve().parent
+        roots.append(executable_dir)
+
+        if hasattr(sys, "_MEIPASS"):
+            roots.append(Path(sys._MEIPASS).resolve())
+
+        # macOS .app bundles commonly place PyInstaller data under Contents/Frameworks,
+        # while some layouts or specs use Contents/Resources.
+        for parent in executable_dir.parents:
+            if parent.name == "Contents":
+                roots.extend([parent / "Frameworks", parent / "Resources"])
+                break
+
+    return roots
+
+
+def _candidate_bundled_binary_paths(binary_name: str) -> list[Path]:
+    """Return bundled binary candidates in source and PyInstaller layouts."""
+    candidates: list[Path] = [
+        _project_root() / "vendor" / "ffmpeg" / binary_name,
+    ]
+
+    for root in _pyinstaller_roots():
+        candidates.extend(
+            [
+                root / "vendor" / "ffmpeg" / binary_name,
+                root / "ffmpeg" / binary_name,
+                root / binary_name,
+            ]
+        )
+
+    # Preserve order while removing duplicates.
+    return list(dict.fromkeys(candidates))
+
+
 def get_bundled_ffmpeg_path() -> Optional[Path]:
     """
     同梱されたffmpegバイナリのパスを取得
@@ -31,36 +83,10 @@ def get_bundled_ffmpeg_path() -> Optional[Path]:
     Returns:
         ffmpegバイナリのパス、存在しない場合はNone
     """
-    # プロジェクトルートを探す
-    # app/core/ffmpeg_runner.py -> app/core -> app -> project_root
-    current = Path(__file__).resolve()
-    project_root = current.parent.parent.parent
-    
-    system = platform.system()
-    if system == "Windows":
-        ffmpeg_name = "ffmpeg.exe"
-    else:
-        ffmpeg_name = "ffmpeg"
-    
-    # vendor/ffmpeg/ を確認
-    vendor_path = project_root / "vendor" / "ffmpeg" / ffmpeg_name
-    if vendor_path.exists():
-        return vendor_path
-    
-    # PyInstallerでビルドされた場合のパス
-    import sys
-    if getattr(sys, 'frozen', False):
-        # 実行ファイルと同じディレクトリ
-        bundle_dir = Path(sys.executable).parent
-        bundled = bundle_dir / "ffmpeg" / ffmpeg_name
-        if bundled.exists():
-            return bundled
-        # _MEIPASSディレクトリ（PyInstaller一時展開先）
-        if hasattr(sys, '_MEIPASS'):
-            meipass = Path(sys._MEIPASS)
-            bundled = meipass / "ffmpeg" / ffmpeg_name
-            if bundled.exists():
-                return bundled
+    ffmpeg_name = _binary_name("ffmpeg")
+    for candidate in _candidate_bundled_binary_paths(ffmpeg_name):
+        if candidate.exists():
+            return candidate
     
     return None
 

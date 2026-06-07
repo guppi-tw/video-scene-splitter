@@ -20,14 +20,10 @@ datas = []
 # vendor/ffmpeg が存在する場合は含める
 ffmpeg_dir = project_root / 'vendor' / 'ffmpeg'
 if ffmpeg_dir.exists():
-    # Windows
-    ffmpeg_exe = ffmpeg_dir / 'ffmpeg.exe'
-    if ffmpeg_exe.exists():
-        datas.append((str(ffmpeg_exe), 'ffmpeg'))
-    # macOS/Linux
-    ffmpeg_bin = ffmpeg_dir / 'ffmpeg'
-    if ffmpeg_bin.exists():
-        datas.append((str(ffmpeg_bin), 'ffmpeg'))
+    for binary_name in ('ffmpeg', 'ffprobe', 'ffmpeg.exe', 'ffprobe.exe'):
+        binary_path = ffmpeg_dir / binary_name
+        if binary_path.exists():
+            datas.append((str(binary_path), 'vendor/ffmpeg'))
 
 # 隠しインポート（PyInstallerが自動検出できないモジュール）
 hiddenimports = [
