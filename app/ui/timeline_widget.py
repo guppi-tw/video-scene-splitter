@@ -304,6 +304,7 @@ class TimelineWidget(QWidget):
     # シグナル
     boundaries_changed = Signal(list)  # 新しい境界時刻リスト
     seek_requested = Signal(float)  # シーク要求（秒）
+    auto_detect_requested = Signal()
     
     def __init__(self):
         super().__init__()
@@ -324,6 +325,13 @@ class TimelineWidget(QWidget):
         header_layout.addWidget(self.label_title)
         
         header_layout.addStretch()
+
+        # 自動検出ボタン
+        self.btn_auto_detect = QPushButton("自動検出")
+        self.btn_auto_detect.setToolTip("映像の変化から分割候補を自動追加します")
+        self.btn_auto_detect.clicked.connect(self.auto_detect_requested.emit)
+        self.btn_auto_detect.setEnabled(False)
+        header_layout.addWidget(self.btn_auto_detect)
 
         # リセットボタン
         self.btn_reset = QPushButton("リセット")
@@ -360,6 +368,28 @@ class TimelineWidget(QWidget):
         self.timeline_bar.set_boundaries(scene_start_times)
         
         self.btn_reset.setEnabled(True)
+        self.btn_auto_detect.setEnabled(True)
+
+    def replace_boundaries(self, scene_start_times: List[float]):
+        """境界時刻をまとめて置き換える"""
+        if self.duration <= 0:
+            return
+
+        normalized = sorted({
+            max(0.0, min(float(time), self.duration))
+            for time in scene_start_times
+        })
+        if not normalized or normalized[0] != 0.0:
+            normalized.insert(0, 0.0)
+
+        self.scene_start_times = normalized
+        self.timeline_bar.set_boundaries(normalized)
+        self.btn_reset.setEnabled(True)
+        self._emit_changes()
+
+    def set_auto_detect_enabled(self, enabled: bool):
+        """自動検出ボタンの有効状態を設定"""
+        self.btn_auto_detect.setEnabled(enabled and self.duration > 0)
     
     def set_playhead(self, position: float):
         """再生位置を更新"""

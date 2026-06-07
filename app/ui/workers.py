@@ -10,6 +10,7 @@ from app.core import (
     FFmpegRunner, Exporter,
     group_clips_by_metadata
 )
+from app.core.scene_detector import detect_scene_boundaries
 
 
 class ThumbnailWorker(QObject):
@@ -51,6 +52,35 @@ class ThumbnailWorker(QObject):
             pass
         finally:
             self.finished.emit()
+
+
+class SceneDetectionWorker(QObject):
+    """シーン自動検出ワーカー"""
+
+    progress = Signal(str)
+    detection_complete = Signal(list)
+    error = Signal(str)
+
+    def __init__(self, job: VideoJob, duration: float):
+        super().__init__()
+        self.job = job
+        self.duration = duration
+        self._cancelled = False
+
+    def cancel(self):
+        self._cancelled = True
+
+    def run(self):
+        """シーン境界を検出"""
+        try:
+            self.progress.emit("シーン自動検出を開始しました")
+            boundaries = detect_scene_boundaries(self.job.source_path, duration=self.duration)
+            if self._cancelled:
+                self.progress.emit("シーン自動検出はキャンセルされました")
+                return
+            self.detection_complete.emit(boundaries)
+        except Exception as e:
+            self.error.emit(f"シーン自動検出エラー: {str(e)}")
 
 
 class ExportWorker(QObject):

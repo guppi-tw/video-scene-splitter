@@ -122,6 +122,10 @@ def build_app(project_root: Path, arch: str):
         "--hidden-import", "PySide6.QtWidgets",
         "--hidden-import", "PySide6.QtMultimedia",
         "--hidden-import", "PySide6.QtMultimediaWidgets",
+        "--hidden-import", "scenedetect",
+        "--hidden-import", "scenedetect.detectors",
+        "--hidden-import", "scenedetect.detectors.adaptive_detector",
+        "--hidden-import", "scenedetect.detectors.content_detector",
         # パス追加
         "--paths", str(project_root),
         # ターゲットアーキテクチャ

@@ -32,6 +32,10 @@ hiddenimports = [
     'PySide6.QtWidgets',
     'PySide6.QtMultimedia',
     'PySide6.QtMultimediaWidgets',
+    'scenedetect',
+    'scenedetect.detectors',
+    'scenedetect.detectors.adaptive_detector',
+    'scenedetect.detectors.content_detector',
 ]
 
 a = Analysis(

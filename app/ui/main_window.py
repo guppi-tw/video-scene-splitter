@@ -19,7 +19,8 @@ from app.ui.clip_list_widget import ClipListWidget
 from app.ui.log_widget import LogWidget
 from app.ui.preview_widget import PreviewWidget
 from app.ui.timeline_widget import TimelineWidget
-from app.ui.workers import ThumbnailWorker, ExportWorker
+from app.ui.workers import ThumbnailWorker, ExportWorker, SceneDetectionWorker
+from app.core.scene_detector import merge_boundaries
 
 
 class MainWindow(QMainWindow):
@@ -36,6 +37,8 @@ class MainWindow(QMainWindow):
         self.thumbnail_worker: ThumbnailWorker = None
         self.export_thread: QThread = None
         self.export_worker: ExportWorker = None
+        self.scene_detection_thread: QThread = None
+        self.scene_detection_worker: SceneDetectionWorker = None
 
         # Undo履歴（境界のスナップショット）
         self._undo_stack: List[List[float]] = []
@@ -108,6 +111,7 @@ class MainWindow(QMainWindow):
 
         # タイムライン → 境界変更
         self.timeline_widget.boundaries_changed.connect(self._on_boundaries_changed)
+        self.timeline_widget.auto_detect_requested.connect(self._on_auto_detect_requested)
 
         # クリップリスト → プレビュー
         self.clip_list_widget.clip_preview_requested.connect(self._on_clip_preview)
@@ -245,6 +249,74 @@ class MainWindow(QMainWindow):
         """クリップのプレビュー再生"""
         self.preview_widget.seek_to(start_time)
         self.preview_widget.play()
+
+    def _on_auto_detect_requested(self):
+        """シーン境界の自動検出を開始"""
+        if not self.current_job or not self.current_job.scenes:
+            return
+
+        if self.scene_detection_thread and self.scene_detection_thread.isRunning():
+            QMessageBox.warning(self, "警告", "シーン自動検出中です")
+            return
+
+        duration = self.current_job.scenes[-1].end_time
+        self.log_widget.append_log("シーン自動検出を準備中...")
+        self.log_widget.set_status("シーン自動検出中")
+        self.timeline_widget.set_auto_detect_enabled(False)
+
+        self.scene_detection_thread = QThread()
+        self.scene_detection_worker = SceneDetectionWorker(self.current_job, duration)
+        self.scene_detection_worker.moveToThread(self.scene_detection_thread)
+
+        self.scene_detection_thread.started.connect(self.scene_detection_worker.run)
+        self.scene_detection_worker.progress.connect(self._on_progress)
+        self.scene_detection_worker.detection_complete.connect(self._on_scene_detection_complete)
+        self.scene_detection_worker.error.connect(self._on_scene_detection_error)
+
+        self.scene_detection_thread.start()
+
+    def _on_scene_detection_complete(self, detected_boundaries: list):
+        """シーン自動検出完了"""
+        if not self.current_job or not self.current_job.scenes:
+            self._finish_scene_detection()
+            return
+
+        duration = self.current_job.scenes[-1].end_time
+        existing_boundaries = self.timeline_widget.get_boundaries()
+        merged_boundaries = merge_boundaries(
+            existing_boundaries,
+            detected_boundaries,
+            duration,
+        )
+        added_count = len(merged_boundaries) - len(existing_boundaries)
+
+        if added_count > 0:
+            self._undo_stack.append(existing_boundaries.copy())
+            self.timeline_widget.replace_boundaries(merged_boundaries)
+            self.log_widget.append_log(
+                f"シーン自動検出: {added_count} 個の分割候補を追加しました"
+            )
+        else:
+            self.log_widget.append_log("シーン自動検出: 新しい分割候補はありませんでした")
+
+        self.log_widget.set_status(f"編集中: {self.current_job.filename}")
+        self._finish_scene_detection()
+
+    def _on_scene_detection_error(self, message: str):
+        """シーン自動検出エラー"""
+        self.log_widget.append_log(f"[ERROR] {message}")
+        self.log_widget.set_status("シーン自動検出エラー")
+        QMessageBox.warning(self, "シーン自動検出エラー", message)
+        self._finish_scene_detection()
+
+    def _finish_scene_detection(self):
+        """シーン自動検出スレッドを片付ける"""
+        if self.scene_detection_thread:
+            self.scene_detection_thread.quit()
+            self.scene_detection_thread.wait()
+            self.scene_detection_thread = None
+            self.scene_detection_worker = None
+        self.timeline_widget.set_auto_detect_enabled(self.current_job is not None)
 
     def _update_timeline(self, job: VideoJob):
         """タイムラインを更新"""
@@ -529,6 +601,12 @@ class MainWindow(QMainWindow):
 
             if self.export_worker:
                 self.export_worker.cancel()
+
+        if self.scene_detection_thread and self.scene_detection_thread.isRunning():
+            if self.scene_detection_worker:
+                self.scene_detection_worker.cancel()
+            self.scene_detection_thread.quit()
+            self.scene_detection_thread.wait()
 
         if self.thumbnail_thread and self.thumbnail_thread.isRunning():
             if self.thumbnail_worker:
