@@ -11,6 +11,8 @@ from PySide6.QtWidgets import (
 from PySide6.QtCore import Qt, Signal, QRect, QPoint
 from PySide6.QtGui import QPainter, QColor, QPen, QBrush, QMouseEvent, QFont
 
+from app.core.time_format import format_seconds
+
 
 @dataclass
 class BoundaryMarker:
@@ -42,6 +44,7 @@ class TimelineBar(QWidget):
         
         self.setMinimumHeight(50)
         self.setMaximumHeight(60)
+        self.setMinimumWidth(120)
         self.setMouseTracking(True)
         self.setCursor(Qt.ArrowCursor)
         
@@ -77,15 +80,15 @@ class TimelineBar(QWidget):
         if self.duration <= 0:
             return 0
         margin = 10
-        available_width = self.width() - 2 * margin
+        available_width = max(1, self.width() - 2 * margin)
         return margin + int((time / self.duration) * available_width)
-    
+
     def _x_to_time(self, x: int) -> float:
         """X座標を時刻に変換"""
         if self.duration <= 0:
             return 0
         margin = 10
-        available_width = self.width() - 2 * margin
+        available_width = max(1, self.width() - 2 * margin)
         x_clamped = max(margin, min(x, self.width() - margin))
         return ((x_clamped - margin) / available_width) * self.duration
     
@@ -185,15 +188,11 @@ class TimelineBar(QWidget):
         current_text = self._format_time(self.playhead_position)
         painter.drawText(playhead_x - 20, height - 5, current_text)
     
-    def _format_time(self, seconds: float) -> str:
+    @staticmethod
+    def _format_time(seconds: float) -> str:
         """秒を MM:SS 形式に変換"""
-        total_sec = int(seconds)
-        m, s = divmod(total_sec, 60)
-        h, m = divmod(m, 60)
-        if h > 0:
-            return f"{h}:{m:02d}:{s:02d}"
-        return f"{m}:{s:02d}"
-    
+        return format_seconds(seconds)
+
     def mousePressEvent(self, event: QMouseEvent):
         """マウス押下"""
         if event.button() == Qt.LeftButton:
@@ -362,13 +361,26 @@ class TimelineWidget(QWidget):
         """シーン情報を設定"""
         self.duration = duration
         self.scene_start_times = scene_start_times.copy()
-        self._original_boundaries = scene_start_times.copy()
-        
+
         self.timeline_bar.set_duration(duration)
         self.timeline_bar.set_boundaries(scene_start_times)
-        
+
         self.btn_reset.setEnabled(True)
         self.btn_auto_detect.setEnabled(True)
+
+    def clear(self):
+        """タイムラインを空にする"""
+        self.duration = 0.0
+        self.scene_start_times = []
+        self.timeline_bar.set_duration(0.0)
+        self.timeline_bar.set_boundaries([])
+        self.timeline_bar.set_playhead(0.0)
+        self.btn_reset.setEnabled(False)
+        self.btn_auto_detect.setEnabled(False)
+
+    def add_boundary(self, time: float):
+        """境界を追加する（公開API）"""
+        self._on_boundary_added(time)
 
     def replace_boundaries(self, scene_start_times: List[float]):
         """境界時刻をまとめて置き換える"""
@@ -408,6 +420,10 @@ class TimelineWidget(QWidget):
     
     def _on_boundary_added(self, time: float):
         """境界が追加された"""
+        # 既存境界とほぼ同じ位置への二重追加を防ぐ
+        if any(abs(time - t) < 0.05 for t in self.scene_start_times):
+            return
+
         # 適切な位置に挿入
         new_times = self.scene_start_times.copy()
         
@@ -433,10 +449,10 @@ class TimelineWidget(QWidget):
             self._emit_changes()
     
     def _on_reset(self):
-        """元の境界に戻す"""
-        self.scene_start_times = self._original_boundaries.copy()
-        self.timeline_bar.set_boundaries(self.scene_start_times)
-        self._emit_changes()
+        """全ての境界をクリアして動画全体を1シーンに戻す"""
+        if self.duration <= 0:
+            return
+        self.replace_boundaries([0.0])
     
     def _on_position_clicked(self, time: float):
         """タイムライン上でクリックされた"""

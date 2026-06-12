@@ -12,6 +12,8 @@ from PySide6.QtCore import Qt, QUrl, Signal, Slot
 from PySide6.QtMultimedia import QMediaPlayer, QAudioOutput
 from PySide6.QtMultimediaWidgets import QVideoWidget
 
+from app.core.time_format import format_ms_tenths
+
 
 class PreviewWidget(QWidget):
     """動画プレビューウィジェット"""
@@ -19,6 +21,7 @@ class PreviewWidget(QWidget):
     # シグナル
     position_changed = Signal(float)  # 再生位置が変わった（秒）
     split_requested = Signal(float)   # ここで分割（秒）
+    error_occurred = Signal(str)      # 再生エラー
     
     def __init__(self):
         super().__init__()
@@ -200,11 +203,32 @@ class PreviewWidget(QWidget):
     
     def play(self):
         """再生"""
+        self.player.play()
+
+    def toggle_play(self):
+        """再生/一時停止を切り替え"""
         if self.player.playbackState() == QMediaPlayer.PlayingState:
             self.player.pause()
         else:
             self.player.play()
-    
+
+    def play_from(self, position_sec: float):
+        """指定位置から再生（一時停止中でも再生を開始する）"""
+        self.seek_to(position_sec)
+        self.player.play()
+
+    def step_back(self):
+        """コマ戻し（公開API）"""
+        self._on_step_back()
+
+    def step_forward(self):
+        """コマ送り（公開API）"""
+        self._on_step_forward()
+
+    def request_split(self):
+        """現在位置での分割を要求（公開API）"""
+        self._on_split_clicked()
+
     def pause(self):
         """一時停止"""
         self.player.pause()
@@ -234,7 +258,7 @@ class PreviewWidget(QWidget):
     
     def _on_play_clicked(self):
         """再生/一時停止ボタン"""
-        self.play()
+        self.toggle_play()
     
     def _on_stop_clicked(self):
         """停止ボタン"""
@@ -300,21 +324,24 @@ class PreviewWidget(QWidget):
         total = self._format_time(self._duration_ms)
         self.time_label.setText(f"{current} / {total}")
     
-    def _format_time(self, ms: int) -> str:
+    @staticmethod
+    def _format_time(ms: int) -> str:
         """ミリ秒を MM:SS.f 形式に変換"""
-        tenths = (ms % 1000) // 100
-        total_sec = ms // 1000
-        m, s = divmod(total_sec, 60)
-        h, m = divmod(m, 60)
-        if h > 0:
-            return f"{h:02d}:{m:02d}:{s:02d}.{tenths}"
-        return f"{m:02d}:{s:02d}.{tenths}"
-    
+        return format_ms_tenths(ms)
+
     def _on_error(self, error, error_string):
         """エラー発生"""
-        print(f"Player error: {error} - {error_string}")
-    
+        self.error_occurred.emit(f"動画の再生に失敗しました: {error_string}")
+
     def cleanup(self):
-        """クリーンアップ"""
+        """クリーンアップ（停止してコントロールを無効化）"""
         self.player.stop()
         self.player.setSource(QUrl())
+        self.current_video_path = None
+        self._duration_ms = 0
+        self._update_time_label(0)
+        for btn in (
+            self.btn_play, self.btn_stop, self.btn_back, self.btn_forward,
+            self.btn_split, self.btn_step_back, self.btn_step_forward,
+        ):
+            btn.setEnabled(False)

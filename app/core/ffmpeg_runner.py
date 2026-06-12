@@ -94,8 +94,12 @@ def get_bundled_ffmpeg_path() -> Optional[Path]:
 class FFmpegRunner:
     """ffmpeg操作クラス"""
     
+    # クリップ書き出し（コーデックコピー）の最大待ち時間
+    EXTRACT_TIMEOUT_SEC = 3600
+
     def __init__(self):
         self.ffmpeg_path = self._find_ffmpeg()
+        self.ffprobe_path = self._find_ffprobe()
         self._current_process: Optional[subprocess.Popen] = None
         self._cancelled = False
     
@@ -136,17 +140,29 @@ class FFmpegRunner:
             "2. ffmpegをインストールしてPATHに追加"
         )
     
+    def _find_ffprobe(self) -> Optional[str]:
+        """ffprobeのパスを探す（ffmpegの隣 → システムPATH）"""
+        sibling = Path(self.ffmpeg_path).parent / _binary_name("ffprobe")
+        if sibling.exists():
+            return str(sibling)
+        return shutil.which("ffprobe")
+
     @property
     def is_bundled(self) -> bool:
         """同梱バイナリを使用しているかどうか"""
         bundled = get_bundled_ffmpeg_path()
         return bundled is not None and str(bundled) == self.ffmpeg_path
-    
+
     def cancel(self):
         """現在の処理をキャンセル"""
         self._cancelled = True
-        if self._current_process:
-            self._current_process.terminate()
+        # ワーカースレッド側で None に差し替えられる可能性があるためローカルに取る
+        process = self._current_process
+        if process:
+            try:
+                process.terminate()
+            except OSError:
+                pass
     
     def reset_cancel(self):
         """キャンセル状態をリセット"""
@@ -282,7 +298,7 @@ class FFmpegRunner:
                 stderr=subprocess.PIPE,
                 **_popen_kwargs()
             )
-            _, stderr = self._current_process.communicate()
+            _, stderr = self._current_process.communicate(timeout=self.EXTRACT_TIMEOUT_SEC)
             self._current_process = None
             
             if output_path.exists() and output_path.stat().st_size > 0:
@@ -316,39 +332,54 @@ class FFmpegRunner:
             return False
 
     def get_video_duration(self, video_path: Path) -> Optional[float]:
-        """動画の長さを取得"""
-        cmd = [
-            self.ffmpeg_path,
-            "-i", str(video_path),
-            "-f", "null", "-"
-        ]
-        
+        """動画の長さを取得（ffprobe優先、なければffmpegのヘッダ出力から解析）"""
         try:
+            if self.ffprobe_path:
+                result = subprocess.run(
+                    [
+                        self.ffprobe_path,
+                        "-v", "error",
+                        "-show_entries", "format=duration",
+                        "-of", "default=noprint_wrappers=1:nokey=1",
+                        str(video_path),
+                    ],
+                    capture_output=True,
+                    timeout=30,
+                    **_popen_kwargs()
+                )
+                output = result.stdout.decode('utf-8', errors='ignore').strip()
+                try:
+                    return float(output)
+                except ValueError:
+                    logger.warning(f"ffprobeの出力を解析できません: {video_path}: {output!r}")
+
+            # フォールバック: 出力先を指定せず実行するとffmpegは
+            # ファイル情報だけ表示して即終了する（デコードはしない）
             result = subprocess.run(
-                cmd,
+                [self.ffmpeg_path, "-i", str(video_path)],
                 capture_output=True,
-                timeout=60,
+                timeout=30,
                 **_popen_kwargs()
             )
             # ffmpegはstderrに情報を出力する
             output = result.stderr.decode('utf-8', errors='ignore')
-            
-            # Duration: HH:MM:SS.ms を探す
+
+            # Duration: HH:MM:SS.cc を探す
             import re
             match = re.search(r'Duration: (\d+):(\d+):(\d+)\.(\d+)', output)
             if match:
                 hours = int(match.group(1))
                 minutes = int(match.group(2))
                 seconds = int(match.group(3))
-                ms = int(match.group(4))
-                return hours * 3600 + minutes * 60 + seconds + ms / 100
+                centisec = int(match.group(4))
+                return hours * 3600 + minutes * 60 + seconds + centisec / 100
             return None
-            
+
         except subprocess.TimeoutExpired:
             logger.warning(f"動画情報取得がタイムアウト: {video_path}")
             return None
         except FileNotFoundError:
-            logger.error(f"ffmpegが見つかりません")
+            logger.error("ffmpeg/ffprobeが見つかりません")
             return None
         except OSError as e:
             logger.error(f"動画情報取得中にOSエラー: {video_path}: {e}")

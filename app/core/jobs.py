@@ -190,35 +190,6 @@ class VideoJob:
         
         return groups
     
-    def propagate_metadata_from_scene(self, scene_index: int):
-        """
-        指定シーンのメタデータを後続のシーンに伝播
-        （後続シーンに独自の設定がない場合のみ）
-        
-        これは主にUI側で使用し、ユーザーが入力した値を
-        視覚的に後続シーンに反映させるために使う
-        """
-        source_scene = None
-        for scene in self.scenes:
-            if scene.index == scene_index:
-                source_scene = scene
-                break
-        
-        if not source_scene:
-            return
-        
-        # 後続シーンで、独自の設定がないものに伝播
-        found_source = False
-        for scene in self.scenes:
-            if scene.index == scene_index:
-                found_source = True
-                continue
-            
-            if found_source:
-                # 後続シーンに独自の設定がある場合は伝播を停止
-                if scene.has_metadata():
-                    break
-    
     def rebuild_scenes_from_boundaries(self, boundaries: List[float], duration: float):
         """
         境界時刻リストからシーンを再構築。

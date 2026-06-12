@@ -1,16 +1,15 @@
 """
 バックグラウンドワーカー（QThreadベース）
 """
+import logging
 from pathlib import Path
 
 from PySide6.QtCore import QObject, Signal
 
-from app.core import (
-    VideoJob, JobStatus, Scene, Clip,
-    FFmpegRunner, Exporter,
-    group_clips_by_metadata
-)
+from app.core import VideoJob, JobStatus, FFmpegRunner, Exporter
 from app.core.scene_detector import detect_scene_boundaries
+
+logger = logging.getLogger(__name__)
 
 
 class ThumbnailWorker(QObject):
@@ -31,7 +30,7 @@ class ThumbnailWorker(QObject):
         self.ffmpeg.cancel()
 
     def run(self):
-        """サムネイル生成"""
+        """サムネイル生成（生成済みのシーンはスキップ）"""
         try:
             thumb_dir = self.temp_dir / f"job_{self.job.id}"
             thumb_dir.mkdir(parents=True, exist_ok=True)
@@ -40,16 +39,21 @@ class ThumbnailWorker(QObject):
                 if self._cancelled:
                     break
 
-                thumb_time = scene.start_time + min(2.0, scene.duration / 2)
-                thumb_path = thumb_dir / f"clip_{scene.index:04d}.jpg"
+                if scene.thumbnail_path and Path(scene.thumbnail_path).exists():
+                    continue
 
-                if self.ffmpeg.generate_thumbnail(
+                thumb_time = scene.start_time + min(2.0, scene.duration / 2)
+                # 開始時刻ベースのファイル名にすることで、境界編集後も
+                # 変わらないシーンのサムネイルを再利用できる
+                thumb_path = thumb_dir / f"thumb_{int(scene.start_time * 1000):010d}.jpg"
+
+                if thumb_path.exists() or self.ffmpeg.generate_thumbnail(
                     self.job.source_path, thumb_time, thumb_path
                 ):
                     scene.thumbnail_path = thumb_path
                     self.thumbnail_ready.emit(scene.index, str(thumb_path))
         except Exception:
-            pass
+            logger.exception("サムネイル生成中にエラー: %s", self.job.source_path)
         finally:
             self.finished.emit()
 
@@ -74,8 +78,12 @@ class SceneDetectionWorker(QObject):
         """シーン境界を検出"""
         try:
             self.progress.emit("シーン自動検出を開始しました")
-            boundaries = detect_scene_boundaries(self.job.source_path, duration=self.duration)
-            if self._cancelled:
+            boundaries = detect_scene_boundaries(
+                self.job.source_path,
+                duration=self.duration,
+                cancel_callback=lambda: self._cancelled,
+            )
+            if boundaries is None or self._cancelled:
                 self.progress.emit("シーン自動検出はキャンセルされました")
                 return
             self.detection_complete.emit(boundaries)
@@ -109,80 +117,31 @@ class ExportWorker(QObject):
         try:
             self.progress.emit(f"書き出し開始: {self.job.filename}")
 
-            # クリップを計算
-            clips = self.exporter.calculate_clips(self.job)
-            if not clips:
-                self.progress.emit("書き出し対象のシーンがありません")
+            result = self.exporter.export(
+                self.job,
+                self.output_dir,
+                progress_callback=self.progress.emit,
+                clip_progress_callback=self.clip_progress.emit,
+                cancel_callback=lambda: self._cancelled,
+            )
+
+            if result.cancelled:
+                self.job.status = JobStatus.REVIEW
+                self.progress.emit("書き出しをキャンセルしました")
+            elif result.total == 0:
                 self.job.status = JobStatus.ERROR
                 self.job.error_message = "書き出し対象のシーンがありません"
-                self.export_complete.emit(self.job)
-                return
-
-            self.job.clips = clips
-            total_clips = len(clips)
-
-            # メタデータでグループ化
-            clips_by_metadata = group_clips_by_metadata(clips)
-
-            self.progress.emit(f"クリップ数: {total_clips}")
-            self.progress.emit(f"出力グループ数: {len(clips_by_metadata)}")
-
-            # 各グループを書き出し
-            success_count = 0
-            current_clip_num = 0
-
-            for (event_name, event_date, is_sensitive), group_clips in clips_by_metadata.items():
-                if self._cancelled:
-                    self.progress.emit("キャンセルされました")
-                    return
-
-                # 出力ディレクトリを作成
-                output_dir = self.job.get_output_dir(
-                    self.output_dir, event_name, event_date, is_sensitive
-                )
-                output_dir.mkdir(parents=True, exist_ok=True)
-
-                self.progress.emit(f"出力先: {output_dir}")
-
-                # グループ内のクリップを書き出し
-                for clip in group_clips:
-                    if self._cancelled:
-                        self.progress.emit("キャンセルされました")
-                        return
-
-                    current_clip_num += 1
-                    self.clip_progress.emit(current_clip_num, total_clips)
-                    self.progress.emit(f"書き出し中: {current_clip_num}/{total_clips}")
-
-                    filename = self.job.get_clip_filename(clip)
-                    output_path = output_dir / filename
-                    clip.output_path = output_path
-
-                    success = self.ffmpeg.extract_clip(
-                        video_path=self.job.source_path,
-                        start_time=clip.start_time,
-                        end_time=clip.end_time,
-                        output_path=output_path,
-                        use_copy=True,
-                        progress_callback=lambda msg: self.progress.emit(msg)
-                    )
-
-                    if success:
-                        success_count += 1
-                    else:
-                        self.progress.emit(f"警告: クリップ {clip.index} の書き出しに失敗")
-
-            if success_count > 0:
+            elif result.all_succeeded:
                 self.job.status = JobStatus.DONE
-                self.progress.emit(f"書き出し完了: {success_count}/{total_clips} クリップ")
             else:
+                failed = result.total - result.succeeded
                 self.job.status = JobStatus.ERROR
-                self.job.error_message = "すべてのクリップの書き出しに失敗しました"
-                self.progress.emit("書き出し失敗")
-
-            self.export_complete.emit(self.job)
-
+                self.job.error_message = (
+                    f"{failed}/{result.total} クリップの書き出しに失敗しました"
+                )
         except Exception as e:
             self.job.status = JobStatus.ERROR
             self.job.error_message = str(e)
             self.error.emit(f"エラー: {str(e)}")
+        finally:
+            self.export_complete.emit(self.job)

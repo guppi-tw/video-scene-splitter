@@ -3,7 +3,7 @@
 """
 import tempfile
 from pathlib import Path
-from typing import List
+from typing import List, Optional
 
 from PySide6.QtWidgets import (
     QMainWindow, QWidget, QVBoxLayout,
@@ -14,6 +14,7 @@ from PySide6.QtGui import QShortcut, QKeySequence
 
 from app.core import JobQueue, VideoJob, JobStatus, Scene
 from app.core.ffmpeg_runner import FFmpegRunner
+from app.core.time_format import format_seconds
 from app.ui.queue_widget import QueueWidget
 from app.ui.clip_list_widget import ClipListWidget
 from app.ui.log_widget import LogWidget
@@ -41,7 +42,11 @@ class MainWindow(QMainWindow):
         self.scene_detection_worker: SceneDetectionWorker = None
 
         # Undo履歴（境界のスナップショット）
+        # 境界が変わるたびに変更前の状態を積む（分割・ドラッグ・追加・削除・
+        # 自動検出・リセットすべてが対象）
         self._undo_stack: List[List[float]] = []
+        self._last_boundaries: Optional[List[float]] = None
+        self._undoing = False
 
         self._setup_ui()
         self._apply_theme()
@@ -99,12 +104,16 @@ class MainWindow(QMainWindow):
         # キュー → 動画を開く
         self.queue_widget.open_video.connect(self._on_open_video)
         self.queue_widget.job_selected.connect(self._on_job_selected)
+        self.queue_widget.remove_requested.connect(self._on_remove_job)
 
         # プレビュー → タイムライン同期
         self.preview_widget.position_changed.connect(self.timeline_widget.set_playhead)
 
         # プレビュー → 分割
         self.preview_widget.split_requested.connect(self._on_split_at_position)
+
+        # プレビュー → 再生エラー
+        self.preview_widget.error_occurred.connect(self._on_player_error)
 
         # タイムライン → シーク
         self.timeline_widget.seek_requested.connect(self.preview_widget.seek_to)
@@ -126,6 +135,41 @@ class MainWindow(QMainWindow):
             self.clip_list_widget.set_job(job)
             self.preview_widget.load_video(job.source_path)
             self._update_timeline(job)
+            # ジョブをまたいだUndoは破壊的なのでリセット
+            self._undo_stack.clear()
+            self._last_boundaries = [s.start_time for s in job.scenes]
+            self._regenerate_thumbnails()
+
+    def _on_remove_job(self, job_id: int):
+        """キューからのジョブ削除リクエスト"""
+        if (self.export_thread and self.export_thread.isRunning()
+                and self.export_worker and self.export_worker.job.id == job_id):
+            QMessageBox.warning(self, "警告", "書き出し中のジョブは削除できません")
+            return
+
+        removing_current = self.current_job is not None and self.current_job.id == job_id
+
+        if removing_current:
+            self._stop_thumbnail_worker()
+            if self.scene_detection_thread and self.scene_detection_thread.isRunning():
+                if self.scene_detection_worker:
+                    self.scene_detection_worker.cancel()
+                self.scene_detection_thread.quit()
+                self.scene_detection_thread.wait()
+                self.scene_detection_thread = None
+                self.scene_detection_worker = None
+
+        self.job_queue.remove_job(job_id)
+        self.queue_widget.refresh()
+
+        if removing_current:
+            self.current_job = None
+            self._undo_stack.clear()
+            self._last_boundaries = None
+            self.preview_widget.cleanup()
+            self.timeline_widget.clear()
+            self.clip_list_widget.clear()
+            self.log_widget.set_status("待機中")
 
     def _on_open_video(self, job: VideoJob):
         """動画を開いて編集開始"""
@@ -148,7 +192,7 @@ class MainWindow(QMainWindow):
             )
             return
 
-        self.log_widget.append_log(f"動画の長さ: {self._format_time(duration)}")
+        self.log_widget.append_log(f"動画の長さ: {format_seconds(duration)}")
 
         # 動画全体を1シーンとして設定
         scene = Scene(index=1, start_time=0.0, end_time=duration, keep=True)
@@ -156,18 +200,17 @@ class MainWindow(QMainWindow):
         job.status = JobStatus.REVIEW
         self.current_job = job
 
-        # サムネイル生成
-        thumbnail_time = min(2.0, duration / 2)
-        thumbnail_path = self.temp_dir / f"job_{job.id}_clip_0001.jpg"
-
-        if ffmpeg.generate_thumbnail(job.source_path, thumbnail_time, thumbnail_path):
-            scene.thumbnail_path = thumbnail_path
+        self._undo_stack.clear()
+        self._last_boundaries = [0.0]
 
         # UIを更新
         self.queue_widget.refresh()
         self.clip_list_widget.set_job(job)
         self.preview_widget.load_video(job.source_path)
         self.timeline_widget.set_scenes([0.0], duration)
+
+        # サムネイルはバックグラウンドで生成（UIをブロックしない）
+        self._regenerate_thumbnails()
 
         self.log_widget.append_log("編集を開始しました")
         self.log_widget.append_log("「ここで分割」ボタンまたはタイムライン右クリックで境界を追加")
@@ -181,16 +224,14 @@ class MainWindow(QMainWindow):
         if time <= 0 or time >= duration:
             return
 
+        # 既存境界とほぼ同じ位置なら何もしない（floatの完全一致は使わない）
+        boundaries = self.timeline_widget.get_boundaries()
+        if any(abs(time - b) < 0.05 for b in boundaries):
+            return
+
         # 分割時に一時停止
         self.preview_widget.pause()
-
-        # Undo用にスナップショット保存
-        self._undo_stack.append(self.timeline_widget.scene_start_times.copy())
-
-        # 現在の境界リストに追加
-        boundaries = self.timeline_widget.get_boundaries()
-        if time not in boundaries:
-            self.timeline_widget._on_boundary_added(time)
+        self.timeline_widget.add_boundary(time)
 
     def _on_boundaries_changed(self, boundaries: List[float]):
         """タイムラインの境界が変更された"""
@@ -198,6 +239,13 @@ class MainWindow(QMainWindow):
             return
 
         duration = self.current_job.scenes[-1].end_time if self.current_job.scenes else 0
+
+        # Undo履歴に変更前の状態を積む（Undo実行による変更は積まない）
+        if (not self._undoing
+                and self._last_boundaries is not None
+                and boundaries != self._last_boundaries):
+            self._undo_stack.append(self._last_boundaries.copy())
+        self._last_boundaries = list(boundaries)
 
         # シーンを再構築
         self.current_job.rebuild_scenes_from_boundaries(boundaries, duration)
@@ -212,16 +260,23 @@ class MainWindow(QMainWindow):
             f"クリップ数: {len(self.current_job.scenes)}"
         )
 
+    def _stop_thumbnail_worker(self):
+        """サムネイルワーカーを停止して破棄"""
+        if self.thumbnail_thread and self.thumbnail_thread.isRunning():
+            if self.thumbnail_worker:
+                self.thumbnail_worker.cancel()
+            self.thumbnail_thread.quit()
+            self.thumbnail_thread.wait()
+        self.thumbnail_thread = None
+        self.thumbnail_worker = None
+
     def _regenerate_thumbnails(self):
-        """バックグラウンドでサムネイルを再生成"""
+        """バックグラウンドでサムネイルを再生成（生成済みシーンはスキップ）"""
         if not self.current_job:
             return
 
         # 既存のサムネイルワーカーを停止
-        if self.thumbnail_thread and self.thumbnail_thread.isRunning():
-            self.thumbnail_worker.cancel()
-            self.thumbnail_thread.quit()
-            self.thumbnail_thread.wait()
+        self._stop_thumbnail_worker()
 
         self.thumbnail_thread = QThread()
         self.thumbnail_worker = ThumbnailWorker(self.current_job, self.temp_dir)
@@ -235,10 +290,18 @@ class MainWindow(QMainWindow):
 
     def _on_thumbnail_ready(self, scene_index: int, path: str):
         """サムネイル生成完了"""
+        # 停止済みワーカーや別ジョブのワーカーからの通知は無視する
+        if self.sender() is not self.thumbnail_worker:
+            return
+        if self.thumbnail_worker is None or self.thumbnail_worker.job is not self.current_job:
+            return
         self.clip_list_widget.update_thumbnail(scene_index, path)
 
     def _on_thumbnail_finished(self):
         """サムネイル生成全完了"""
+        # 停止済みの旧ワーカーからの通知で現行スレッドを止めない
+        if self.sender() is not self.thumbnail_worker:
+            return
         if self.thumbnail_thread:
             self.thumbnail_thread.quit()
             self.thumbnail_thread.wait()
@@ -247,8 +310,7 @@ class MainWindow(QMainWindow):
 
     def _on_clip_preview(self, start_time: float):
         """クリップのプレビュー再生"""
-        self.preview_widget.seek_to(start_time)
-        self.preview_widget.play()
+        self.preview_widget.play_from(start_time)
 
     def _on_auto_detect_requested(self):
         """シーン境界の自動検出を開始"""
@@ -291,7 +353,6 @@ class MainWindow(QMainWindow):
         added_count = len(merged_boundaries) - len(existing_boundaries)
 
         if added_count > 0:
-            self._undo_stack.append(existing_boundaries.copy())
             self.timeline_widget.replace_boundaries(merged_boundaries)
             self.log_widget.append_log(
                 f"シーン自動検出: {added_count} 個の分割候補を追加しました"
@@ -358,8 +419,7 @@ class MainWindow(QMainWindow):
         self.log_widget.set_detail(f"書き出し中: {current} / {total} クリップ")
 
     def _on_export_complete(self, job: VideoJob):
-        """書き出し完了"""
-        self.log_widget.set_status("書き出し完了")
+        """書き出し完了（失敗・キャンセルを含む）"""
         self.log_widget.hide_progress()
 
         if self.export_thread:
@@ -371,6 +431,7 @@ class MainWindow(QMainWindow):
         self.queue_widget.refresh()
 
         if job.status == JobStatus.DONE:
+            self.log_widget.set_status("書き出し完了")
             QMessageBox.information(
                 self,
                 "書き出し完了",
@@ -378,6 +439,18 @@ class MainWindow(QMainWindow):
                 f"出力先: {job.output_dir}\n"
                 f"クリップ数: {len(job.clips)}"
             )
+        elif job.status == JobStatus.ERROR:
+            self.log_widget.set_status("書き出し失敗")
+            QMessageBox.warning(
+                self,
+                "書き出し失敗",
+                f"{job.filename} の書き出しに失敗しました。\n"
+                f"{job.error_message}\n\n"
+                f"詳細はログを確認してください。"
+            )
+        else:
+            # キャンセル時
+            self.log_widget.set_status("書き出しキャンセル")
 
     def _on_error(self, message: str):
         """エラー発生"""
@@ -533,11 +606,11 @@ class MainWindow(QMainWindow):
 
         # 左矢印: コマ戻し
         s = QShortcut(QKeySequence(Qt.Key_Left), self)
-        s.activated.connect(self.preview_widget._on_step_back)
+        s.activated.connect(self.preview_widget.step_back)
 
         # 右矢印: コマ送り
         s = QShortcut(QKeySequence(Qt.Key_Right), self)
-        s.activated.connect(self.preview_widget._on_step_forward)
+        s.activated.connect(self.preview_widget.step_forward)
 
         # Ctrl+Z: Undo
         s = QShortcut(QKeySequence("Ctrl+Z"), self)
@@ -550,7 +623,7 @@ class MainWindow(QMainWindow):
         if isinstance(focused, (QLineEdit, QTextEdit)):
             return
         if self.preview_widget.current_video_path:
-            self.preview_widget.play()
+            self.preview_widget.toggle_play()
 
     def _shortcut_split(self):
         """S: 分割（テキスト入力中は無視）"""
@@ -558,16 +631,23 @@ class MainWindow(QMainWindow):
         from PySide6.QtWidgets import QLineEdit, QTextEdit
         if isinstance(focused, (QLineEdit, QTextEdit)):
             return
-        self.preview_widget._on_split_clicked()
+        self.preview_widget.request_split()
 
     def _shortcut_undo(self):
         """Ctrl+Z: 直前の境界操作を取り消し"""
         if not self._undo_stack:
             return
         prev = self._undo_stack.pop()
-        self.timeline_widget.scene_start_times = prev
-        self.timeline_widget.timeline_bar.set_boundaries(prev)
-        self.timeline_widget._emit_changes()
+        self._undoing = True
+        try:
+            self.timeline_widget.replace_boundaries(prev)
+        finally:
+            self._undoing = False
+
+    def _on_player_error(self, message: str):
+        """プレイヤーエラーをログに表示"""
+        self.log_widget.append_log(f"[ERROR] {message}")
+        self.log_widget.set_status("再生エラー")
 
     def _on_toggle_log(self):
         """ログ表示/非表示"""
@@ -577,14 +657,6 @@ class MainWindow(QMainWindow):
         else:
             self.log_widget.show()
             self.btn_toggle_log.setText("ログ非表示")
-
-    def _format_time(self, seconds: float) -> str:
-        hours = int(seconds // 3600)
-        minutes = int((seconds % 3600) // 60)
-        secs = int(seconds % 60)
-        if hours > 0:
-            return f"{hours}:{minutes:02d}:{secs:02d}"
-        return f"{minutes}:{secs:02d}"
 
     def closeEvent(self, event):
         """ウィンドウ閉じる時"""
@@ -601,6 +673,8 @@ class MainWindow(QMainWindow):
 
             if self.export_worker:
                 self.export_worker.cancel()
+            self.export_thread.quit()
+            self.export_thread.wait()
 
         if self.scene_detection_thread and self.scene_detection_thread.isRunning():
             if self.scene_detection_worker:
@@ -613,6 +687,8 @@ class MainWindow(QMainWindow):
                 self.thumbnail_worker.cancel()
             self.thumbnail_thread.quit()
             self.thumbnail_thread.wait()
+
+        self.preview_widget.cleanup()
 
         # 一時ディレクトリを削除
         import shutil

@@ -12,7 +12,19 @@ from PySide6.QtWidgets import (
 from PySide6.QtCore import Qt, Signal, QDate
 from PySide6.QtGui import QPixmap
 
-from app.core.jobs import VideoJob, Scene
+from app.core.jobs import VideoJob, Scene, Clip
+from app.core.time_format import format_seconds
+
+
+class ClickableLabel(QLabel):
+    """クリックを通知するQLabel"""
+
+    clicked = Signal()
+
+    def mousePressEvent(self, event):
+        if event.button() == Qt.LeftButton:
+            self.clicked.emit()
+        super().mousePressEvent(event)
 
 
 class ClipRow(QFrame):
@@ -38,12 +50,14 @@ class ClipRow(QFrame):
         layout.setSpacing(8)
 
         # サムネイル
-        self.thumb_label = QLabel()
+        self.thumb_label = ClickableLabel()
         self.thumb_label.setFixedSize(120, 68)
         self.thumb_label.setAlignment(Qt.AlignCenter)
         self.thumb_label.setStyleSheet("background-color: #333; border: 1px solid #555;")
         self.thumb_label.setCursor(Qt.PointingHandCursor)
-        self.thumb_label.mousePressEvent = lambda e: self.preview_requested.emit(self.scene.start_time)
+        self.thumb_label.clicked.connect(
+            lambda: self.preview_requested.emit(self.scene.start_time)
+        )
         if self.scene.thumbnail_path and Path(self.scene.thumbnail_path).exists():
             self._set_thumbnail(self.scene.thumbnail_path)
         else:
@@ -67,14 +81,13 @@ class ClipRow(QFrame):
 
         # ファイル名入力
         self.filename_edit = QLineEdit()
-        auto_name = self.job.get_clip_filename(
-            type('_', (), {
-                'filename_override': None,
-                'event_name': self.scene.event_name or self.job.default_event_name or '',
-                'event_date': self.scene.event_date or self.job.default_event_date,
-                'index': self.scene.index
-            })()
-        )
+        auto_name = self.job.get_clip_filename(Clip(
+            index=self.scene.index,
+            start_time=self.scene.start_time,
+            end_time=self.scene.end_time,
+            event_name=self.scene.event_name or self.job.default_event_name or '',
+            event_date=self.scene.event_date or self.job.default_event_date,
+        ))
         self.filename_edit.setPlaceholderText(auto_name)
         if self.scene.filename_override:
             self.filename_edit.setText(self.scene.filename_override)
@@ -136,12 +149,7 @@ class ClipRow(QFrame):
 
     @staticmethod
     def _format_time(seconds: float) -> str:
-        total_sec = int(seconds)
-        m, s = divmod(total_sec, 60)
-        h, m = divmod(m, 60)
-        if h > 0:
-            return f"{h}:{m:02d}:{s:02d}"
-        return f"{m}:{s:02d}"
+        return format_seconds(seconds)
 
 
 class ClipListWidget(QWidget):
@@ -229,9 +237,37 @@ class ClipListWidget(QWidget):
     def set_job(self, job: VideoJob):
         """ジョブを設定してクリップ一覧を構築"""
         self.current_job = job
-        if job.default_event_name:
-            self.event_name_edit.setText(job.default_event_name)
+
+        # 前のジョブのメタデータ入力を引きずらないようリセット
+        self.event_name_edit.blockSignals(True)
+        self.date_edit.blockSignals(True)
+        self.date_check.blockSignals(True)
+        self.event_name_edit.setText(job.default_event_name or "")
+        if job.default_event_date:
+            d = job.default_event_date
+            self.date_edit.setDate(QDate(d.year, d.month, d.day))
+            self.date_check.setChecked(True)
+        else:
+            self.date_check.setChecked(False)
+        self.event_name_edit.blockSignals(False)
+        self.date_edit.blockSignals(False)
+        self.date_check.blockSignals(False)
+
         self.refresh_clips()
+
+    def clear(self):
+        """クリップ一覧を空にする"""
+        self.current_job = None
+        for row in self._clip_rows:
+            row.setParent(None)
+            row.deleteLater()
+        self._clip_rows.clear()
+        self.event_name_edit.blockSignals(True)
+        self.date_check.blockSignals(True)
+        self.event_name_edit.clear()
+        self.date_check.setChecked(False)
+        self.event_name_edit.blockSignals(False)
+        self.date_check.blockSignals(False)
 
     def refresh_clips(self):
         """クリップ行を再構築"""
@@ -255,7 +291,6 @@ class ClipListWidget(QWidget):
             row = ClipRow(scene, self.current_job)
             row.preview_requested.connect(self.clip_preview_requested.emit)
             row.keep_changed.connect(self._on_individual_keep_changed)
-            row.sensitive_changed.connect(self._on_individual_sensitive_changed)
             self._clip_rows.append(row)
             self.scroll_layout.addWidget(row)
 
@@ -302,11 +337,6 @@ class ClipListWidget(QWidget):
     def _on_individual_keep_changed(self, scene_index: int, keep: bool):
         """個別クリップのKeep変更時に全体チェックボックスを同期"""
         self._sync_keep_all_check()
-
-    def _on_individual_sensitive_changed(self, scene_index: int, is_sensitive: bool):
-        """個別クリップの要注意変更"""
-        if not self.current_job:
-            return
 
     def _sync_keep_all_check(self):
         """全クリップのKeep状態に応じてチェックボックスを更新"""

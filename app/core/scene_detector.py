@@ -3,7 +3,7 @@ Automatic scene boundary detection.
 """
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Iterable, Optional
+from typing import Callable, Iterable, Optional
 
 
 @dataclass
@@ -18,6 +18,10 @@ class SceneDetectionSettings:
 
 class SceneDetectionDependencyError(RuntimeError):
     """Raised when the optional scene detection dependency is unavailable."""
+
+
+class SceneDetectionCancelled(Exception):
+    """Raised internally to abort detection when the caller cancels."""
 
 
 def _timecode_seconds(value) -> float:
@@ -68,8 +72,13 @@ def detect_scene_boundaries(
     video_path: Path,
     duration: Optional[float] = None,
     settings: Optional[SceneDetectionSettings] = None,
-) -> list[float]:
-    """Detect scene boundaries using PySceneDetect."""
+    cancel_callback: Optional[Callable[[], bool]] = None,
+) -> Optional[list[float]]:
+    """Detect scene boundaries using PySceneDetect.
+
+    cancel_callback is polled once per decoded frame; when it returns True
+    detection aborts promptly and this function returns None.
+    """
     settings = settings or SceneDetectionSettings()
 
     try:
@@ -90,7 +99,21 @@ def detect_scene_boundaries(
             min_scene_len=settings.min_scene_len_frames,
         )
 
-    scene_list = detect(str(video_path), detector)
+    if cancel_callback is not None:
+        original_process_frame = detector.process_frame
+
+        def process_frame_with_cancel(frame_num, frame_img):
+            if cancel_callback():
+                raise SceneDetectionCancelled()
+            return original_process_frame(frame_num, frame_img)
+
+        detector.process_frame = process_frame_with_cancel
+
+    try:
+        scene_list = detect(str(video_path), detector)
+    except SceneDetectionCancelled:
+        return None
+
     return scene_list_to_boundaries(
         scene_list,
         duration=duration,

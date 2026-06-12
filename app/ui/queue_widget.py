@@ -9,6 +9,7 @@ from PySide6.QtWidgets import (
     QFileDialog, QAbstractItemView, QLabel, QMessageBox
 )
 from PySide6.QtCore import Signal, Qt
+from PySide6.QtGui import QBrush, QColor
 
 from app.core import AddBatchResult, JobQueue, VideoJob, JobStatus
 
@@ -16,8 +17,9 @@ from app.core import AddBatchResult, JobQueue, VideoJob, JobStatus
 class QueueWidget(QWidget):
     """ジョブキュー表示・操作ウィジェット"""
 
-    job_selected = Signal(object)  # VideoJob
-    open_video = Signal(object)    # VideoJob - 編集開始
+    job_selected = Signal(object)     # VideoJob
+    open_video = Signal(object)       # VideoJob - 編集開始
+    remove_requested = Signal(int)    # job_id - 削除リクエスト（可否はMainWindowが判断）
 
     def __init__(self, job_queue: JobQueue):
         super().__init__()
@@ -138,8 +140,8 @@ class QueueWidget(QWidget):
         row = self.table.currentRow()
         if row >= 0:
             job_id = int(self.table.item(row, 0).text())
-            self.job_queue.remove_job(job_id)
-            self.refresh()
+            # 編集中・書き出し中の後始末が必要なためMainWindow側で削除する
+            self.remove_requested.emit(job_id)
 
     def _on_open_video(self):
         """編集を開始"""
@@ -172,14 +174,17 @@ class QueueWidget(QWidget):
             self.table.setItem(row, 1, QTableWidgetItem(job.filename))
             self.table.setItem(row, 2, QTableWidgetItem(job.status.value))
 
-            # ステータスに応じた色付け
+            # ステータスに応じた色付け（ダークテーマに合わせた配色）
             status_item = self.table.item(row, 2)
-            if job.status == JobStatus.DONE:
-                status_item.setBackground(Qt.green)
-            elif job.status == JobStatus.ERROR:
-                status_item.setBackground(Qt.red)
-            elif job.status == JobStatus.REVIEW:
-                status_item.setBackground(Qt.cyan)
+            status_colors = {
+                JobStatus.DONE: "#2d5a2d",
+                JobStatus.ERROR: "#5a2d2d",
+                JobStatus.REVIEW: "#2d4a5a",
+            }
+            color = status_colors.get(job.status)
+            if color:
+                status_item.setBackground(QBrush(QColor(color)))
+                status_item.setForeground(QBrush(QColor("#d4d4d4")))
 
     def select_job(self, job_id: int):
         """指定IDのジョブを選択"""

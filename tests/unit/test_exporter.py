@@ -7,7 +7,7 @@ from pathlib import Path
 from unittest.mock import Mock, MagicMock
 
 from app.core.jobs import Scene, Clip, VideoJob
-from app.core.exporter import Exporter
+from app.core.exporter import Exporter, ExportResult
 
 
 class TestExporter:
@@ -57,11 +57,16 @@ class TestCalculateClips(TestExporter):
         ]
         clips = exporter.calculate_clips(sample_job)
 
-        # 1200秒 = 595 + 595 + 10 -> 3クリップ（短い余りは吸収されない可能性）
-        assert len(clips) >= 2
+        # 1200秒 = 595 + 595 + 10 -> 短い余りは最後の2クリップで再配分
+        assert len(clips) == 3
         assert clips[0].duration == 595.0
         assert clips[0].start_time == 0.0
         assert clips[0].end_time == 595.0
+        # 全クリップが最大長以下で、隙間なく繋がっている
+        assert all(c.duration <= Exporter.MAX_CLIP_DURATION for c in clips)
+        assert clips[-1].end_time == 1200.0
+        for prev, nxt in zip(clips, clips[1:]):
+            assert prev.end_time == nxt.start_time
 
     def test_skip_dropped_scenes(self, exporter, sample_job):
         """keep=Falseのシーンはスキップされる"""
@@ -166,55 +171,59 @@ class TestSplitSceneToClips(TestExporter):
         assert clips[1].start_time == 595.0
         assert clips[1].end_time == 1000.0
 
+    def test_short_remainder_is_rebalanced_not_absorbed(self, exporter):
+        """短い余りは前のクリップを延長せず、最後の2クリップで均等に再配分される
 
-class TestMergeShortRemainders(TestExporter):
-    """_merge_short_remaindersメソッドのテスト"""
+        延長吸収だと595秒を超え、アップロード先の10分制限を破ってしまう。
+        """
+        scene = Scene(index=1, start_time=0.0, end_time=610.0)  # 595 + 15秒
+        clips = exporter._split_scene_to_clips(scene, 1, "イベント", date(2024, 1, 1))
 
-    def test_no_short_remainders(self, exporter):
-        """短い余りがない場合"""
-        clips = [
-            Clip(index=1, start_time=0.0, end_time=500.0, source_scene_indices=[1]),
-            Clip(index=2, start_time=500.0, end_time=1000.0, source_scene_indices=[1]),
-        ]
-        result = exporter._merge_short_remainders(clips)
+        assert len(clips) == 2
+        assert clips[0].duration == pytest.approx(305.0)
+        assert clips[1].duration == pytest.approx(305.0)
+        assert all(c.duration <= Exporter.MAX_CLIP_DURATION for c in clips)
 
-        assert len(result) == 2
+    def test_no_clip_ever_exceeds_max_duration(self, exporter):
+        """どんな長さでも595秒を超えるクリップは生成されない"""
+        for total in (596.0, 610.0, 624.9, 1190.0, 1200.0, 3600.0):
+            scene = Scene(index=1, start_time=0.0, end_time=total)
+            clips = exporter._split_scene_to_clips(scene, 1, "イベント", None)
+            assert all(
+                c.duration <= Exporter.MAX_CLIP_DURATION for c in clips
+            ), f"total={total}"
+            assert clips[0].start_time == 0.0
+            assert clips[-1].end_time == total
 
-    def test_merge_short_remainder(self, exporter):
-        """短い余りが前のクリップに吸収される"""
-        clips = [
-            Clip(index=1, start_time=0.0, end_time=595.0, source_scene_indices=[1]),
-            Clip(index=2, start_time=595.0, end_time=610.0, source_scene_indices=[1]),  # 15秒 < 30秒
-        ]
-        result = exporter._merge_short_remainders(clips)
+    def test_filename_override_kept_for_single_clip(self, exporter):
+        """自動分割が有効でも、分割不要ならファイル名指定が引き継がれる"""
+        scene = Scene(index=1, start_time=0.0, end_time=100.0,
+                      filename_override="うんどうかい")
+        clips = exporter._split_scene_to_clips(scene, 1, "イベント", None)
 
-        assert len(result) == 1
-        assert result[0].start_time == 0.0
-        assert result[0].end_time == 610.0
+        assert len(clips) == 1
+        assert clips[0].filename_override == "うんどうかい"
 
-    def test_no_merge_different_scenes(self, exporter):
-        """異なるシーンからのクリップは吸収されない"""
-        clips = [
-            Clip(index=1, start_time=0.0, end_time=595.0, source_scene_indices=[1]),
-            Clip(index=2, start_time=595.0, end_time=610.0, source_scene_indices=[2]),  # 異なるシーン
-        ]
-        result = exporter._merge_short_remainders(clips)
+    def test_filename_override_gets_part_suffix_when_split(self, exporter):
+        """分割される場合はファイル名指定に連番が付く"""
+        scene = Scene(index=1, start_time=0.0, end_time=1000.0,
+                      filename_override="うんどうかい.mp4")
+        clips = exporter._split_scene_to_clips(scene, 1, "イベント", None)
 
-        assert len(result) == 2
+        assert len(clips) == 2
+        assert clips[0].filename_override == "うんどうかい_001"
+        assert clips[1].filename_override == "うんどうかい_002"
 
-    def test_single_clip(self, exporter):
-        """1つのクリップの場合"""
-        clips = [
-            Clip(index=1, start_time=0.0, end_time=100.0, source_scene_indices=[1]),
-        ]
-        result = exporter._merge_short_remainders(clips)
+    def test_no_auto_split_keeps_override(self, mock_ffmpeg):
+        """auto_split=False ではシーンが分割されずファイル名指定も維持される"""
+        exporter = Exporter(mock_ffmpeg, auto_split=False)
+        scene = Scene(index=1, start_time=0.0, end_time=1000.0,
+                      filename_override="ちょうへん")
+        clips = exporter._split_scene_to_clips(scene, 1, "イベント", None)
 
-        assert len(result) == 1
-
-    def test_empty_list(self, exporter):
-        """空のリストの場合"""
-        result = exporter._merge_short_remainders([])
-        assert len(result) == 0
+        assert len(clips) == 1
+        assert clips[0].duration == 1000.0
+        assert clips[0].filename_override == "ちょうへん"
 
 
 class TestExport(TestExporter):
@@ -227,7 +236,87 @@ class TestExport(TestExporter):
             Scene(index=1, start_time=0.0, end_time=100.0, keep=True, is_sensitive=True),
         ]
 
-        assert exporter.export(sample_job, tmp_path) is True
+        result = exporter.export(sample_job, tmp_path)
 
+        assert result.all_succeeded
         output_path = mock_ffmpeg.extract_clip.call_args.kwargs["output_path"]
         assert output_path.parent == tmp_path / "sensitive" / "2024-05-20_テストイベント"
+
+    def test_export_does_not_overwrite_existing_file(self, exporter, mock_ffmpeg, sample_job, tmp_path):
+        """既存ファイル（別ジョブや過去の書き出し）を上書きしない"""
+        mock_ffmpeg.extract_clip.return_value = True
+        sample_job.scenes = [
+            Scene(index=1, start_time=0.0, end_time=100.0, keep=True),
+        ]
+
+        existing_dir = tmp_path / "2024-05-20_テストイベント"
+        existing_dir.mkdir(parents=True)
+        existing = existing_dir / "2024-05-20_テストイベント_001.mp4"
+        existing.write_bytes(b"previous export")
+
+        result = exporter.export(sample_job, tmp_path)
+
+        assert result.all_succeeded
+        output_path = mock_ffmpeg.extract_clip.call_args.kwargs["output_path"]
+        assert output_path != existing
+        assert output_path.parent == existing_dir
+        # 既存ファイルは無傷
+        assert existing.read_bytes() == b"previous export"
+
+    def test_non_contiguous_same_metadata_groups_get_unique_filenames(
+        self, exporter, mock_ffmpeg, sample_job, tmp_path
+    ):
+        """同じメタデータのシーン群が離れていても、出力ファイル名は重複しない"""
+        mock_ffmpeg.extract_clip.return_value = True
+        sample_job.scenes = [
+            Scene(index=1, start_time=0.0, end_time=100.0, keep=True, event_name="A"),
+            Scene(index=2, start_time=100.0, end_time=200.0, keep=True, event_name="B"),
+            Scene(index=3, start_time=200.0, end_time=300.0, keep=True, event_name="A"),
+        ]
+
+        result = exporter.export(sample_job, tmp_path)
+
+        assert result.all_succeeded
+        output_paths = [
+            call.kwargs["output_path"]
+            for call in mock_ffmpeg.extract_clip.call_args_list
+        ]
+        assert len(output_paths) == 3
+        assert len(set(output_paths)) == 3
+
+    def test_partial_failure_is_reported(self, exporter, mock_ffmpeg, sample_job, tmp_path):
+        """一部のクリップが失敗した場合、結果に反映される"""
+        mock_ffmpeg.extract_clip.side_effect = [True, False]
+        sample_job.scenes = [
+            Scene(index=1, start_time=0.0, end_time=100.0, keep=True),
+            Scene(index=2, start_time=100.0, end_time=200.0, keep=True),
+        ]
+
+        result = exporter.export(sample_job, tmp_path)
+
+        assert result.total == 2
+        assert result.succeeded == 1
+        assert not result.all_succeeded
+
+    def test_export_no_clips(self, exporter, sample_job, tmp_path):
+        """書き出し対象がない場合"""
+        sample_job.scenes = [
+            Scene(index=1, start_time=0.0, end_time=100.0, keep=False),
+        ]
+
+        result = exporter.export(sample_job, tmp_path)
+
+        assert result.total == 0
+        assert result.succeeded == 0
+        assert not result.all_succeeded
+
+    def test_export_cancellation(self, exporter, mock_ffmpeg, sample_job, tmp_path):
+        """キャンセルされた場合はffmpegを呼ばずに中断する"""
+        sample_job.scenes = [
+            Scene(index=1, start_time=0.0, end_time=100.0, keep=True),
+        ]
+
+        result = exporter.export(sample_job, tmp_path, cancel_callback=lambda: True)
+
+        assert result.cancelled
+        mock_ffmpeg.extract_clip.assert_not_called()
