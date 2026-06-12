@@ -162,7 +162,12 @@ dist/
   VideoSceneSplitter.app
 ```
 
-コード署名は行っていないため、初回起動時に macOS の Gatekeeper 警告が出る場合があります。その場合は Finder で右クリックして「開く」を選択してください。
+ビルド時には以下が自動で行われます。
+
+- `assets/icon.icns` があればアプリアイコンとして埋め込み（`python scripts/generate_icon.py` で再生成できます）
+- ad-hoc コード署名（Apple Silicon では署名がないと起動できない場合があるため）。プロジェクトが iCloud 同期フォルダ内にある場合も、同期外の一時ディレクトリで署名してから戻すことで対応します
+
+Developer ID による署名・公証は行っていないため、初回起動時に macOS の Gatekeeper 警告が出る場合があります。その場合は Finder で右クリックして「開く」を選択してください。
 
 ## ffmpeg
 

@@ -128,3 +128,7 @@ vendor/ffmpeg/ffprobe.exe
 build/
 dist/
 *.spec.bak
+VideoSceneSplitter.spec
+
+# Generated icon intermediates (icon.icns is committed)
+assets/icon.iconset/

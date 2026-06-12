@@ -7,6 +7,7 @@ import subprocess
 import sys
 import shutil
 import platform
+import tempfile
 from pathlib import Path
 
 MIN_PYTHON = (3, 11)
@@ -79,6 +80,57 @@ def check_ffmpeg(project_root: Path):
         return False
 
 
+def resign_app(app_path: Path) -> bool:
+    """アプリバンドルに ad-hoc 署名を付け直す
+
+    iCloud同期フォルダ（~/Documents 等）では File Provider が
+    com.apple.FinderInfo などの拡張属性を自動付与するため、
+    その場での codesign は "detritus not allowed" で失敗する。
+    同期外の一時ディレクトリにクリーンコピーを作って署名し、
+    元の場所に戻すことで回避する。
+    """
+    print("\nad-hoc署名を実行中...")
+    try:
+        with tempfile.TemporaryDirectory(prefix="vss-sign-") as tmp:
+            clean_app = Path(tmp) / app_path.name
+            subprocess.run(
+                ["ditto", "--norsrc", "--noextattr", "--noacl",
+                 str(app_path), str(clean_app)],
+                check=True,
+            )
+            subprocess.run(
+                ["codesign", "-s", "-", "--force", "--deep", str(clean_app)],
+                check=True, capture_output=True,
+            )
+            subprocess.run(
+                ["codesign", "--verify", "--deep", "--strict", str(clean_app)],
+                check=True, capture_output=True,
+            )
+            # 署名済みコピーで置き換え（署名後に付くxattrは検証に影響しない）
+            shutil.rmtree(app_path)
+            subprocess.run(["ditto", str(clean_app), str(app_path)], check=True)
+
+        # 最終検証は --strict を付けない。iCloud同期フォルダでは置き戻した
+        # 直後に File Provider が FinderInfo を再付与し、strict 検証だけが
+        # 反応するため（署名自体は有効で、実行にも影響しない）。
+        result = subprocess.run(
+            ["codesign", "--verify", "--deep", str(app_path)],
+            capture_output=True,
+        )
+        if result.returncode == 0:
+            print("✓ ad-hoc署名 完了（署名検証OK）")
+            return True
+        print("警告: 署名の最終検証に失敗しました")
+        print(result.stderr.decode("utf-8", errors="ignore"))
+        return False
+    except subprocess.CalledProcessError as e:
+        print("警告: ad-hoc署名に失敗しました。手動で署名してください:")
+        print(f"  codesign -s - --force --deep {app_path}")
+        if e.stderr:
+            print(e.stderr.decode("utf-8", errors="ignore"))
+        return False
+
+
 def build_app(project_root: Path, arch: str):
     """アプリをビルド"""
     print("\n" + "=" * 50)
@@ -114,8 +166,6 @@ def build_app(project_root: Path, arch: str):
         "--windowed",  # macOSでは.appバンドルを作成
         "--onedir",    # onedirの方がmacOSでは安定
         "--noconfirm",
-        # アイコン（あれば）
-        # "--icon", "assets/icon.icns",
         # 隠しインポート
         "--hidden-import", "PySide6.QtCore",
         "--hidden-import", "PySide6.QtGui",
@@ -131,7 +181,15 @@ def build_app(project_root: Path, arch: str):
         # ターゲットアーキテクチャ
         "--target-architecture", arch,
     ]
-    
+
+    # アイコン（あれば）
+    icon_path = project_root / "assets" / "icon.icns"
+    if icon_path.exists():
+        cmd.extend(["--icon", str(icon_path)])
+    else:
+        print("情報: assets/icon.icns がないためアイコンなしでビルドします")
+        print("      python scripts/generate_icon.py で生成できます")
+
     # ffmpegデータを追加
     cmd.extend(add_data_args)
     
@@ -151,6 +209,9 @@ def build_app(project_root: Path, arch: str):
     # 結果を確認
     app_path = dist_dir / "VideoSceneSplitter.app"
     if app_path.exists():
+        # PyInstallerの署名はiCloud同期フォルダ内では失敗するため付け直す
+        resign_app(app_path)
+
         print("\n" + "=" * 50)
         print("ビルド成功!")
         print("=" * 50)
