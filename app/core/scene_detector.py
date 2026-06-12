@@ -85,7 +85,8 @@ def detect_scene_boundaries(
         from scenedetect import AdaptiveDetector, ContentDetector, detect
     except ImportError as exc:
         raise SceneDetectionDependencyError(
-            "PySceneDetectがインストールされていません。requirements.txt を再インストールしてください。"
+            "PySceneDetectを読み込めませんでした。requirements.txt を再インストールしてください。\n"
+            f"詳細: {exc}"
         ) from exc
 
     if settings.detector == "content":
