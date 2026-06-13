@@ -5,13 +5,19 @@ from pathlib import Path
 
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QPushButton,
-    QTableWidget, QTableWidgetItem, QHeaderView,
+    QTreeWidget, QTreeWidgetItem, QHeaderView,
     QFileDialog, QAbstractItemView, QLabel, QMessageBox
 )
 from PySide6.QtCore import Signal, Qt
 from PySide6.QtGui import QBrush, QColor
 
 from app.core import AddBatchResult, JobQueue, VideoJob, JobStatus
+from app.core.time_format import format_seconds
+
+
+# ツリーアイテムのデータ役割
+_ROLE_JOB_ID = Qt.UserRole          # トップレベル（動画）に持たせるjob_id
+_ROLE_CLIP_TIME = Qt.UserRole + 1   # 子（クリップ）に持たせる開始秒
 
 
 class QueueWidget(QWidget):
@@ -20,6 +26,8 @@ class QueueWidget(QWidget):
     job_selected = Signal(object)     # VideoJob
     open_video = Signal(object)       # VideoJob - 編集開始
     remove_requested = Signal(int)    # job_id - 削除リクエスト（可否はMainWindowが判断）
+    detect_all_requested = Signal()   # 全動画の一括シーン検出
+    clip_preview_requested = Signal(object, float)  # VideoJob, start_time
 
     def __init__(self, job_queue: JobQueue):
         super().__init__()
@@ -54,20 +62,23 @@ class QueueWidget(QWidget):
 
         layout.addLayout(btn_layout)
 
-        # テーブル
-        self.table = QTableWidget()
-        self.table.setColumnCount(3)
-        self.table.setHorizontalHeaderLabels(["ID", "ファイル名", "ステータス"])
-        self.table.horizontalHeader().setSectionResizeMode(1, QHeaderView.Stretch)
-        self.table.setSelectionBehavior(QAbstractItemView.SelectRows)
-        self.table.setSelectionMode(QAbstractItemView.SingleSelection)
-        self.table.itemSelectionChanged.connect(self._on_selection_changed)
-        self.table.setEditTriggers(QAbstractItemView.NoEditTriggers)
-        self.table.setColumnWidth(0, 30)
-        self.table.setColumnWidth(2, 80)
-        self.table.doubleClicked.connect(self._on_double_click)
+        # 一括検出ボタン
+        self.btn_detect_all = QPushButton("全部検出")
+        self.btn_detect_all.setToolTip("待機中の全動画にシーン検出をまとめて実行します")
+        self.btn_detect_all.clicked.connect(self.detect_all_requested.emit)
+        layout.addWidget(self.btn_detect_all)
 
-        layout.addWidget(self.table)
+        # ツリー（動画 → 分割クリップ）
+        self.tree = QTreeWidget()
+        self.tree.setColumnCount(2)
+        self.tree.setHeaderLabels(["ファイル名 / クリップ", "状態"])
+        self.tree.header().setSectionResizeMode(0, QHeaderView.Stretch)
+        self.tree.header().setSectionResizeMode(1, QHeaderView.ResizeToContents)
+        self.tree.setSelectionMode(QAbstractItemView.SingleSelection)
+        self.tree.setEditTriggers(QAbstractItemView.NoEditTriggers)
+        self.tree.itemSelectionChanged.connect(self._on_selection_changed)
+        self.tree.itemDoubleClicked.connect(self._on_item_double_clicked)
+        layout.addWidget(self.tree)
 
         # D&Dヒント
         self.drop_hint = QLabel("D&Dでファイル追加 / ダブルクリックで編集開始")
@@ -75,9 +86,9 @@ class QueueWidget(QWidget):
         self.drop_hint.setStyleSheet("color: #666; font-size: 10px; padding: 4px;")
         layout.addWidget(self.drop_hint)
 
-    def _on_double_click(self, index):
-        """ダブルクリックで編集開始"""
-        self._on_open_video()
+    def set_detect_all_enabled(self, enabled: bool):
+        """一括検出ボタンの有効状態を設定"""
+        self.btn_detect_all.setEnabled(enabled)
 
     def dragEnterEvent(self, event):
         if event.mimeData().hasUrls():
@@ -136,67 +147,118 @@ class QueueWidget(QWidget):
                 "追加できる新しい MP4 ファイルがありませんでした。"
             )
 
+    def _selected_job_item(self) -> QTreeWidgetItem:
+        """選択中のトップレベル（動画）アイテムを返す。子選択時は親を返す。"""
+        item = self.tree.currentItem()
+        if item is None:
+            return None
+        return item if item.parent() is None else item.parent()
+
     def _on_remove(self):
-        row = self.table.currentRow()
-        if row >= 0:
-            job_id = int(self.table.item(row, 0).text())
+        item = self._selected_job_item()
+        if item is not None:
+            job_id = item.data(0, _ROLE_JOB_ID)
             # 編集中・書き出し中の後始末が必要なためMainWindow側で削除する
             self.remove_requested.emit(job_id)
 
-    def _on_open_video(self):
-        """編集を開始"""
-        row = self.table.currentRow()
-        if row >= 0:
-            job_id = int(self.table.item(row, 0).text())
-            job = self.job_queue.get_job_by_id(job_id)
-            if job and job.status in [JobStatus.WAITING, JobStatus.REVIEW]:
-                self.open_video.emit(job)
-        else:
-            job = self.job_queue.get_next_waiting()
-            if job:
-                self.open_video.emit(job)
+    def _on_item_double_clicked(self, item: QTreeWidgetItem, _column: int):
+        """ダブルクリックで編集開始（クリップなら親動画を開く）"""
+        job_item = item if item.parent() is None else item.parent()
+        job_id = job_item.data(0, _ROLE_JOB_ID)
+        job = self.job_queue.get_job_by_id(job_id)
+        if job and job.status in [JobStatus.WAITING, JobStatus.REVIEW]:
+            self.open_video.emit(job)
 
     def _on_selection_changed(self):
-        row = self.table.currentRow()
-        if row >= 0:
-            job_id = int(self.table.item(row, 0).text())
-            job = self.job_queue.get_job_by_id(job_id)
+        item = self.tree.currentItem()
+        if item is None:
+            return
+        if item.parent() is None:
+            job = self.job_queue.get_job_by_id(item.data(0, _ROLE_JOB_ID))
             if job:
                 self.job_selected.emit(job)
+        else:
+            # クリップ選択: 親動画を選択扱いにし、その位置をプレビュー
+            job = self.job_queue.get_job_by_id(item.parent().data(0, _ROLE_JOB_ID))
+            start = item.data(0, _ROLE_CLIP_TIME)
+            if job:
+                self.job_selected.emit(job)
+                if start is not None:
+                    self.clip_preview_requested.emit(job, float(start))
 
     def refresh(self):
-        """テーブルを更新"""
-        jobs = self.job_queue.get_all_jobs()
-        self.table.setRowCount(len(jobs))
+        """ツリーを更新（動画 → 分割クリップ）"""
+        # 展開状態と選択中ジョブを保持
+        expanded = {
+            self.tree.topLevelItem(i).data(0, _ROLE_JOB_ID)
+            for i in range(self.tree.topLevelItemCount())
+            if self.tree.topLevelItem(i).isExpanded()
+        }
+        selected_item = self._selected_job_item()
+        selected_id = selected_item.data(0, _ROLE_JOB_ID) if selected_item else None
 
-        for row, job in enumerate(jobs):
-            self.table.setItem(row, 0, QTableWidgetItem(str(job.id)))
-            self.table.setItem(row, 1, QTableWidgetItem(job.filename))
-            self.table.setItem(row, 2, QTableWidgetItem(job.status.value))
+        self.tree.clear()
 
-            # ステータスに応じた色付け（ダークテーマに合わせた配色）
-            status_item = self.table.item(row, 2)
-            status_colors = {
-                JobStatus.DONE: "#2d5a2d",
-                JobStatus.ERROR: "#5a2d2d",
-                JobStatus.REVIEW: "#2d4a5a",
-            }
+        status_colors = {
+            JobStatus.DONE: "#2d5a2d",
+            JobStatus.ERROR: "#5a2d2d",
+            JobStatus.REVIEW: "#2d4a5a",
+        }
+
+        for job in self.job_queue.get_all_jobs():
+            scene_count = len(job.scenes)
+            status_text = job.status.value
+            if scene_count > 0:
+                status_text = f"{job.status.value} / {scene_count}本"
+
+            top = QTreeWidgetItem([job.filename, status_text])
+            top.setData(0, _ROLE_JOB_ID, job.id)
             color = status_colors.get(job.status)
             if color:
-                status_item.setBackground(QBrush(QColor(color)))
-                status_item.setForeground(QBrush(QColor("#d4d4d4")))
+                top.setBackground(1, QBrush(QColor(color)))
+                top.setForeground(1, QBrush(QColor("#d4d4d4")))
+            self.tree.addTopLevelItem(top)
+
+            # 分割クリップを子として追加
+            for scene in job.scenes:
+                label = (
+                    f"#{scene.index}  {format_seconds(scene.start_time)}"
+                    f"–{format_seconds(scene.end_time)}"
+                )
+                state = "keep" if scene.keep else "除外"
+                child = QTreeWidgetItem([label, state])
+                child.setData(0, _ROLE_CLIP_TIME, scene.start_time)
+                if not scene.keep:
+                    child.setForeground(0, QBrush(QColor("#888")))
+                top.addChild(child)
+
+            # 展開状態を復元（新規検出で子ができた動画は開く）
+            if job.id in expanded or (scene_count > 0 and job.id not in expanded
+                                      and job.id == selected_id):
+                top.setExpanded(True)
+
+            if job.id == selected_id:
+                self.tree.setCurrentItem(top)
 
     def select_job(self, job_id: int):
         """指定IDのジョブを選択"""
-        for row in range(self.table.rowCount()):
-            if int(self.table.item(row, 0).text()) == job_id:
-                self.table.selectRow(row)
+        for i in range(self.tree.topLevelItemCount()):
+            item = self.tree.topLevelItem(i)
+            if item.data(0, _ROLE_JOB_ID) == job_id:
+                self.tree.setCurrentItem(item)
+                break
+
+    def expand_job(self, job_id: int):
+        """指定動画のクリップ一覧を展開"""
+        for i in range(self.tree.topLevelItemCount()):
+            item = self.tree.topLevelItem(i)
+            if item.data(0, _ROLE_JOB_ID) == job_id:
+                item.setExpanded(True)
                 break
 
     def get_selected_job(self) -> VideoJob:
         """選択中のジョブを取得"""
-        row = self.table.currentRow()
-        if row >= 0:
-            job_id = int(self.table.item(row, 0).text())
-            return self.job_queue.get_job_by_id(job_id)
+        item = self._selected_job_item()
+        if item is not None:
+            return self.job_queue.get_job_by_id(item.data(0, _ROLE_JOB_ID))
         return None

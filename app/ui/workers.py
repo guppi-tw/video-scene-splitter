@@ -105,6 +105,64 @@ class SceneDetectionWorker(QObject):
             self.finished.emit()
 
 
+class BatchSceneDetectionWorker(QObject):
+    """複数動画のシーン分割を一括検出するワーカー（逐次処理）"""
+
+    progress = Signal(str)
+    progress_percent = Signal(int)  # 全体進捗 (0-100)
+    video_done = Signal(int, int)   # job_id, 検出シーン数
+    error = Signal(str)
+    finished = Signal()
+
+    def __init__(self, jobs: list, settings: Optional[SceneDetectionSettings] = None):
+        super().__init__()
+        self.jobs = jobs
+        self.settings = settings
+        self._cancelled = False
+
+    def cancel(self):
+        self._cancelled = True
+
+    def run(self):
+        """各動画を順番にシーン検出し、結果を各ジョブに設定する"""
+        runner = FFmpegRunner()
+        total = len(self.jobs)
+        try:
+            for i, job in enumerate(self.jobs):
+                if self._cancelled:
+                    break
+
+                self.progress.emit(f"({i + 1}/{total}) 検出中: {job.filename}")
+
+                duration = runner.get_video_duration(job.source_path)
+                if duration is None or duration <= 0:
+                    self.progress.emit(f"スキップ（長さ取得失敗）: {job.filename}")
+                    continue
+
+                def on_percent(pct, _i=i):
+                    overall = int((_i + pct / 100.0) / total * 100) if total else 100
+                    self.progress_percent.emit(overall)
+
+                boundaries = detect_scene_boundaries(
+                    job.source_path,
+                    duration=duration,
+                    settings=self.settings,
+                    cancel_callback=lambda: self._cancelled,
+                    progress_callback=on_percent,
+                )
+                if self._cancelled or boundaries is None:
+                    break
+
+                job.rebuild_scenes_from_boundaries(boundaries, duration)
+                job.status = JobStatus.REVIEW
+                self.video_done.emit(job.id, len(job.scenes))
+                self.progress_percent.emit(int((i + 1) / total * 100) if total else 100)
+        except Exception as e:
+            self.error.emit(f"一括検出エラー: {str(e)}")
+        finally:
+            self.finished.emit()
+
+
 class DateDetectionWorker(QObject):
     """焼き込み日付検出ワーカー"""
 

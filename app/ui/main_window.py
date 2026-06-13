@@ -24,7 +24,7 @@ from app.ui.preview_widget import PreviewWidget
 from app.ui.timeline_widget import TimelineWidget
 from app.ui.workers import (
     ThumbnailWorker, ExportWorker, SceneDetectionWorker,
-    DateDetectionWorker, BlankDetectionWorker,
+    DateDetectionWorker, BlankDetectionWorker, BatchSceneDetectionWorker,
 )
 from app.core.scene_detector import absorb_short_scenes, merge_boundaries
 
@@ -52,6 +52,8 @@ class MainWindow(QMainWindow):
         self.blank_detection_worker: BlankDetectionWorker = None
         self._propose_merge_after_blank = False
         self._blank_protected_times: List[float] = []
+        self.batch_detection_thread: QThread = None
+        self.batch_detection_worker: BatchSceneDetectionWorker = None
 
         # Undo履歴（境界のスナップショット）
         # 境界が変わるたびに変更前の状態を積む（分割・ドラッグ・追加・削除・
@@ -117,6 +119,8 @@ class MainWindow(QMainWindow):
         self.queue_widget.open_video.connect(self._on_open_video)
         self.queue_widget.job_selected.connect(self._on_job_selected)
         self.queue_widget.remove_requested.connect(self._on_remove_job)
+        self.queue_widget.detect_all_requested.connect(self._on_detect_all_requested)
+        self.queue_widget.clip_preview_requested.connect(self._on_queue_clip_preview)
 
         # プレビュー → タイムライン同期
         self.preview_widget.position_changed.connect(self.timeline_widget.set_playhead)
@@ -206,6 +210,73 @@ class MainWindow(QMainWindow):
             self.clip_list_widget.clear()
             self.log_widget.set_status("待機中")
 
+    def _on_queue_clip_preview(self, job: VideoJob, start_time: float):
+        """キューのツリーでクリップを選んだとき、その動画を開いて頭出しする"""
+        if self.current_job is not job:
+            self._on_open_video(job)
+        self.preview_widget.seek_to(start_time)
+
+    def _on_detect_all_requested(self):
+        """待機中の全動画にシーン検出を一括実行"""
+        if self.batch_detection_thread and self.batch_detection_thread.isRunning():
+            QMessageBox.warning(self, "警告", "一括検出を実行中です")
+            return
+
+        jobs = [j for j in self.job_queue.get_all_jobs() if j.status == JobStatus.WAITING]
+        if not jobs:
+            QMessageBox.information(
+                self, "一括検出",
+                "検出対象（待機中）の動画がありません。\n"
+                "既に開いた動画はそれぞれの画面で検出してください。"
+            )
+            return
+
+        self.log_widget.clear_log()
+        self.log_widget.set_status("一括シーン検出中")
+        self.log_widget.append_log(f"{len(jobs)} 本の動画をシーン検出します...")
+        self.queue_widget.set_detect_all_enabled(False)
+
+        self.batch_detection_thread = QThread()
+        self.batch_detection_worker = BatchSceneDetectionWorker(
+            jobs, settings=self.timeline_widget.get_detection_settings()
+        )
+        self.batch_detection_worker.moveToThread(self.batch_detection_thread)
+
+        self.batch_detection_thread.started.connect(self.batch_detection_worker.run)
+        self.batch_detection_worker.progress.connect(self._on_progress)
+        self.batch_detection_worker.progress_percent.connect(self._on_batch_detect_percent)
+        self.batch_detection_worker.video_done.connect(self._on_batch_video_done)
+        self.batch_detection_worker.error.connect(self._on_batch_detect_error)
+        self.batch_detection_worker.finished.connect(self._on_batch_detect_finished)
+
+        self.batch_detection_thread.start()
+
+    def _on_batch_detect_percent(self, percent: int):
+        self.log_widget.set_progress_bar(percent, 100)
+        self.log_widget.set_detail(f"一括検出中: {percent}%")
+
+    def _on_batch_video_done(self, job_id: int, scene_count: int):
+        job = self.job_queue.get_job_by_id(job_id)
+        name = job.filename if job else f"job {job_id}"
+        self.log_widget.append_log(f"検出完了: {name} → {scene_count}本")
+        self.queue_widget.refresh()
+
+    def _on_batch_detect_error(self, message: str):
+        self.log_widget.append_log(f"[ERROR] {message}")
+
+    def _on_batch_detect_finished(self):
+        if self.sender() is not self.batch_detection_worker:
+            return
+        self.log_widget.hide_progress()
+        self.log_widget.set_status("一括検出完了")
+        if self.batch_detection_thread:
+            self.batch_detection_thread.quit()
+            self.batch_detection_thread.wait()
+            self.batch_detection_thread = None
+            self.batch_detection_worker = None
+        self.queue_widget.set_detect_all_enabled(True)
+        self.queue_widget.refresh()
+
     def _on_open_video(self, job: VideoJob):
         """動画を開いて編集開始"""
         if not job:
@@ -229,26 +300,31 @@ class MainWindow(QMainWindow):
 
         self.log_widget.append_log(f"動画の長さ: {format_seconds(duration)}")
 
-        # 動画全体を1シーンとして設定
-        scene = Scene(index=1, start_time=0.0, end_time=duration, keep=True)
-        job.scenes = [scene]
+        # 一括検出済みなどで既にシーンがある場合はそれを保持し、
+        # 無い場合のみ動画全体を1シーンとして初期化する
+        if not job.scenes:
+            job.scenes = [Scene(index=1, start_time=0.0, end_time=duration, keep=True)]
         job.status = JobStatus.REVIEW
         self.current_job = job
 
+        boundaries = [s.start_time for s in job.scenes]
         self._undo_stack.clear()
-        self._last_boundaries = [0.0]
+        self._last_boundaries = list(boundaries)
 
         # UIを更新
         self.queue_widget.refresh()
         self.clip_list_widget.set_job(job)
         self.preview_widget.load_video(job.source_path)
-        self.timeline_widget.set_scenes([0.0], duration)
+        self.timeline_widget.set_scenes(boundaries, duration)
 
         # サムネイルはバックグラウンドで生成（UIをブロックしない）
         self._regenerate_thumbnails()
 
         self.log_widget.append_log("編集を開始しました")
-        self.log_widget.append_log("「ここで分割」ボタンまたはタイムライン右クリックで境界を追加")
+        if len(job.scenes) > 1:
+            self.log_widget.append_log(f"検出済みクリップ: {len(job.scenes)}本")
+        else:
+            self.log_widget.append_log("「ここで分割」ボタンまたはタイムライン右クリックで境界を追加")
 
     def _on_split_at_position(self, time: float):
         """指定位置で分割（自動一時停止）"""
@@ -1029,6 +1105,12 @@ class MainWindow(QMainWindow):
                 self.blank_detection_worker.cancel()
             self.blank_detection_thread.quit()
             self.blank_detection_thread.wait()
+
+        if self.batch_detection_thread and self.batch_detection_thread.isRunning():
+            if self.batch_detection_worker:
+                self.batch_detection_worker.cancel()
+            self.batch_detection_thread.quit()
+            self.batch_detection_thread.wait()
 
         if self.thumbnail_thread and self.thumbnail_thread.isRunning():
             if self.thumbnail_worker:
