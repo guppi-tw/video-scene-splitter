@@ -192,6 +192,29 @@ class TestVideoJob:
         filename = job.get_clip_filename(clip)
         assert filename == "2024-05-20_運動会_001.mp4"
 
+    def test_get_clip_filename_falls_back_to_source_name(self):
+        """名前未指定なら元ファイル名（拡張子なし）を使う"""
+        job = VideoJob(id=1, source_path=Path("/path/to/家族旅行.mp4"))
+        clip = Clip(index=2, start_time=0.0, end_time=100.0)
+        assert job.get_clip_filename(clip) == "unknown_家族旅行_002.mp4"
+
+    def test_get_output_folder_name_falls_back_to_source_name(self):
+        """フォルダ名も名前未指定なら元ファイル名を使う"""
+        job = VideoJob(id=1, source_path=Path("/path/to/家族旅行.mp4"))
+        assert job.get_output_folder_name() == "unknown_家族旅行"
+
+    def test_get_clip_filename_sanitizes_source_name(self):
+        """元ファイル名の使用不可文字は置換される"""
+        job = VideoJob(id=1, source_path=Path("/path/to/a/b:c.mp4"))
+        clip = Clip(index=1, start_time=0.0, end_time=10.0)
+        assert job.get_clip_filename(clip) == "unknown_b_c_001.mp4"
+
+    def test_get_clip_filename_explicit_name_overrides_source(self):
+        """明示の名前指定があれば元ファイル名より優先される"""
+        job = VideoJob(id=1, source_path=Path("/path/to/家族旅行.mp4"))
+        clip = Clip(index=1, start_time=0.0, end_time=10.0, event_name="運動会")
+        assert job.get_clip_filename(clip) == "unknown_運動会_001.mp4"
+
     def test_get_output_dir_sensitive(self):
         """要注意クリップは sensitive 配下へ出力される"""
         job = VideoJob(id=1, source_path=Path("/path/to/video.mp4"))

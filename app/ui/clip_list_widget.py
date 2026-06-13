@@ -192,7 +192,7 @@ class ClipListWidget(QWidget):
 
         meta_layout.addWidget(QLabel("ファイル名:"))
         self.event_name_edit = QLineEdit()
-        self.event_name_edit.setPlaceholderText("出力ファイルのベース名")
+        self.event_name_edit.setPlaceholderText("出力ファイル名（未指定なら元ファイル名）")
         self.event_name_edit.editingFinished.connect(self._on_default_metadata_changed)
         meta_layout.addWidget(self.event_name_edit, stretch=1)
 

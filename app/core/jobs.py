@@ -126,6 +126,11 @@ class VideoJob:
     @property
     def filename(self) -> str:
         return self.source_path.name
+
+    @property
+    def base_name(self) -> str:
+        """名前未指定時に使う、切り出し前の動画ファイル名（拡張子なし）"""
+        return self.source_path.stem or "untitled"
     
     @property
     def kept_scenes(self) -> list[Scene]:
@@ -223,12 +228,17 @@ class VideoJob:
 
         self.scenes = new_scenes
 
+    @staticmethod
+    def _sanitize_name(name: str) -> str:
+        """ファイル名・フォルダ名に使えない文字を置換"""
+        return "".join(c if c.isalnum() or c in "._- " else "_" for c in name)
+
     def get_output_folder_name(self, event_name: str = None, event_date: date = None) -> str:
-        """出力フォルダ名を生成"""
-        name = event_name or self.default_event_name or "untitled"
+        """出力フォルダ名を生成。名前未指定なら元ファイル名を使う。"""
+        name = event_name or self.default_event_name or self.base_name
         d = event_date or self.default_event_date
         date_str = d.strftime("%Y-%m-%d") if d else "unknown"
-        return f"{date_str}_{name}"
+        return f"{date_str}_{self._sanitize_name(name)}"
 
     def get_output_dir(
         self,
@@ -250,11 +260,11 @@ class VideoJob:
             if not name.endswith('.mp4'):
                 name += '.mp4'
             return name
-        name = clip.event_name or self.default_event_name or "untitled"
+        name = clip.event_name or self.default_event_name or self.base_name
         d = clip.event_date or self.default_event_date
         date_str = d.strftime("%Y-%m-%d") if d else "unknown"
         # ファイル名に使えない文字を置換
-        safe_name = "".join(c if c.isalnum() or c in "._- " else "_" for c in name)
+        safe_name = self._sanitize_name(name)
         return f"{date_str}_{safe_name}_{clip.index:03d}.mp4"
 
 
