@@ -105,19 +105,25 @@ class ClipRow(QFrame):
 
         layout.addLayout(info_layout, stretch=1)
 
+        # Keep / 要注意 を縦に並べてコンパクトに
+        check_layout = QVBoxLayout()
+        check_layout.setSpacing(2)
+
+        # Keep/Dropチェックボックス
+        self.keep_check = QCheckBox("Keep")
+        self.keep_check.setChecked(self.scene.keep)
+        self.keep_check.stateChanged.connect(self._on_keep_changed)
+        check_layout.addWidget(self.keep_check)
+
         # 要注意チェックボックス
         self.sensitive_check = QCheckBox("要注意")
         self.sensitive_check.setToolTip("クラウド共有前に確認したいクリップを別フォルダへ書き出します")
         self.sensitive_check.setChecked(self.scene.is_sensitive)
         self.sensitive_check.setEnabled(self.scene.keep)
         self.sensitive_check.stateChanged.connect(self._on_sensitive_changed)
-        layout.addWidget(self.sensitive_check)
+        check_layout.addWidget(self.sensitive_check)
 
-        # Keep/Dropチェックボックス
-        self.keep_check = QCheckBox("Keep")
-        self.keep_check.setChecked(self.scene.keep)
-        self.keep_check.stateChanged.connect(self._on_keep_changed)
-        layout.addWidget(self.keep_check)
+        layout.addLayout(check_layout)
 
     def _set_thumbnail(self, path):
         pixmap = QPixmap(str(path))

@@ -2,10 +2,8 @@
 ログ表示ウィジェット
 """
 from PySide6.QtWidgets import (
-    QWidget, QVBoxLayout, QTextEdit, QLabel, 
-    QHBoxLayout, QProgressBar
+    QWidget, QVBoxLayout, QTextEdit, QLabel, QProgressBar
 )
-from PySide6.QtCore import Qt
 
 
 class LogWidget(QWidget):
@@ -20,19 +18,10 @@ class LogWidget(QWidget):
         layout.setContentsMargins(0, 0, 0, 0)
         
         # ステータス行
-        status_layout = QHBoxLayout()
-        
         self.status_label = QLabel("待機中")
         self.status_label.setStyleSheet("font-weight: bold;")
-        status_layout.addWidget(self.status_label)
-        
-        status_layout.addStretch()
-        
-        self.progress_label = QLabel("")
-        status_layout.addWidget(self.progress_label)
-        
-        layout.addLayout(status_layout)
-        
+        layout.addWidget(self.status_label)
+
         # プログレスバー
         self.progress_bar = QProgressBar()
         self.progress_bar.setRange(0, 100)
@@ -65,11 +54,7 @@ class LogWidget(QWidget):
     def set_status(self, status: str):
         """ステータスを設定"""
         self.status_label.setText(status)
-    
-    def set_progress(self, progress: str):
-        """進捗テキストを設定"""
-        self.progress_label.setText(progress)
-    
+
     def set_progress_bar(self, current: int, total: int, show: bool = True):
         """プログレスバーを更新"""
         if show:
@@ -79,17 +64,7 @@ class LogWidget(QWidget):
             self.progress_bar.setFormat(f"%p% ({current:,} / {total:,})")
         else:
             self.progress_bar.hide()
-    
-    def set_progress_percent(self, percent: float, show: bool = True):
-        """プログレスバーをパーセント表示で更新"""
-        if show:
-            self.progress_bar.show()
-            self.progress_bar.setRange(0, 100)
-            self.progress_bar.setValue(int(percent))
-            self.progress_bar.setFormat(f"{percent:.1f}%")
-        else:
-            self.progress_bar.hide()
-    
+
     def set_detail(self, detail: str, show: bool = True):
         """詳細進捗を設定"""
         if show and detail:
