@@ -20,6 +20,38 @@ _ROLE_JOB_ID = Qt.UserRole          # トップレベル（動画）に持たせ
 _ROLE_CLIP_TIME = Qt.UserRole + 1   # 子（クリップ）に持たせる開始秒
 
 
+def job_status_badge(job: VideoJob) -> tuple[str, str, str]:
+    """キューに表示する状態バッジ（テキスト、背景色、文字色）を返す"""
+    scene_count = len(job.scenes)
+
+    if job.status == JobStatus.ERROR:
+        return ("エラー", "#7a2d2d", "#f4d4d4")
+    if job.status == JobStatus.DONE:
+        label = f"書き出し済み / {scene_count}本" if scene_count else "書き出し済み"
+        return (label, "#2d5a2d", "#d8f0d8")
+    if job.status == JobStatus.PROCESSING:
+        return ("処理中", "#6a5523", "#f6e6b8")
+    if job.needs_post_process:
+        return (f"後処理待ち / {scene_count}本", "#654a1f", "#ffe3a3")
+    if scene_count:
+        return (f"確認中 / {scene_count}本", "#2d4a5a", "#d4e8f2")
+    return ("未検出", "#3a3a3a", "#d4d4d4")
+
+
+def next_open_action_text(job: VideoJob) -> str:
+    """選択中ジョブを開いたときの次アクション説明を返す"""
+    if job.status == JobStatus.ERROR:
+        detail = f" / {job.error_message}" if job.error_message else ""
+        return f"この動画はエラー状態です{detail}"
+    if job.status == JobStatus.DONE:
+        return "この動画は書き出し済みです。選択中の内容を確認できます。"
+    if job.needs_post_process:
+        return "開くと: つなぎ目検出 -> 結合提案 -> 日付検出"
+    if job.scenes:
+        return "開くと: 検出済みクリップを確認・編集できます"
+    return "開くと: 動画全体を1シーンとして読み込みます"
+
+
 class QueueWidget(QWidget):
     """ジョブキュー表示・操作ウィジェット"""
 
@@ -79,6 +111,16 @@ class QueueWidget(QWidget):
         self.tree.itemSelectionChanged.connect(self._on_selection_changed)
         self.tree.itemDoubleClicked.connect(self._on_item_double_clicked)
         layout.addWidget(self.tree)
+
+        # 選択中動画を開いたときの次アクション
+        self.next_action_label = QLabel("動画を選択すると、次に起きることを表示します")
+        self.next_action_label.setWordWrap(True)
+        self.next_action_label.setStyleSheet(
+            "background-color: #242424; color: #cfcfcf; "
+            "border: 1px solid #3a3a3a; border-radius: 4px; "
+            "padding: 6px; font-size: 11px;"
+        )
+        layout.addWidget(self.next_action_label)
 
         # D&Dヒント
         self.drop_hint = QLabel("D&Dでファイル追加 / ダブルクリックで編集開始")
@@ -172,19 +214,28 @@ class QueueWidget(QWidget):
     def _on_selection_changed(self):
         item = self.tree.currentItem()
         if item is None:
+            self._update_next_action(None)
             return
         if item.parent() is None:
             job = self.job_queue.get_job_by_id(item.data(0, _ROLE_JOB_ID))
             if job:
+                self._update_next_action(job)
                 self.job_selected.emit(job)
         else:
             # クリップ選択: 親動画を選択扱いにし、その位置をプレビュー
             job = self.job_queue.get_job_by_id(item.parent().data(0, _ROLE_JOB_ID))
             start = item.data(0, _ROLE_CLIP_TIME)
             if job:
+                self._update_next_action(job)
                 self.job_selected.emit(job)
                 if start is not None:
                     self.clip_preview_requested.emit(job, float(start))
+
+    def _update_next_action(self, job: VideoJob):
+        if job is None:
+            self.next_action_label.setText("動画を選択すると、次に起きることを表示します")
+            return
+        self.next_action_label.setText(next_open_action_text(job))
 
     def refresh(self):
         """ツリーを更新（動画 → 分割クリップ）"""
@@ -199,24 +250,15 @@ class QueueWidget(QWidget):
 
         self.tree.clear()
 
-        status_colors = {
-            JobStatus.DONE: "#2d5a2d",
-            JobStatus.ERROR: "#5a2d2d",
-            JobStatus.REVIEW: "#2d4a5a",
-        }
-
         for job in self.job_queue.get_all_jobs():
             scene_count = len(job.scenes)
-            status_text = job.status.value
-            if scene_count > 0:
-                status_text = f"{job.status.value} / {scene_count}本"
+            status_text, bg_color, fg_color = job_status_badge(job)
 
             top = QTreeWidgetItem([job.filename, status_text])
             top.setData(0, _ROLE_JOB_ID, job.id)
-            color = status_colors.get(job.status)
-            if color:
-                top.setBackground(1, QBrush(QColor(color)))
-                top.setForeground(1, QBrush(QColor("#d4d4d4")))
+            top.setBackground(1, QBrush(QColor(bg_color)))
+            top.setForeground(1, QBrush(QColor(fg_color)))
+            top.setToolTip(1, next_open_action_text(job))
             self.tree.addTopLevelItem(top)
 
             # 分割クリップを子として追加
@@ -239,6 +281,8 @@ class QueueWidget(QWidget):
 
             if job.id == selected_id:
                 self.tree.setCurrentItem(top)
+
+        self._update_next_action(self.get_selected_job())
 
     def select_job(self, job_id: int):
         """指定IDのジョブを選択"""
