@@ -20,28 +20,37 @@ class DateDetectionUnavailableError(RuntimeError):
     """OCRバックエンド（macOS Vision）が利用できない場合に送出"""
 
 
-# 日付スタンプが映りやすい領域。クロップ + 拡大でOCR精度を上げる
+# OCR前処理: 拡大 + ノイズ除去 + シャープ + コントラスト強調。
+# VHSのブロックフォント＋ノイズに効く。
+_OCR_POST = "hqdn3d=4:3:6:4,unsharp=5:5:0.8,eq=contrast=1.2"
+
+# 日付スタンプが映りやすい領域。スタンプは機種により下端〜画面中央付近まで
+# 位置がばらつくため、下60%を広めに取り、全体OCRも併用する。
 _REGION_FILTERS = [
-    # 下1/3（右下・左下のスタンプをカバー）
-    "crop=iw:ih/3:0:2*ih/3,scale=iw*3:-2",
-    # 上1/3
-    "crop=iw:ih/3:0:0,scale=iw*3:-2",
-    # フレーム全体（フォールバック）
-    None,
+    # 下60%（下端〜中央付近のスタンプを広くカバー）
+    f"crop=iw:ih*3/5:0:ih*2/5,scale=1280:-2,{_OCR_POST}",
+    # フレーム全体を高解像度化（位置に依存せず全テキストを拾う）
+    "scale=1280:-2",
+    # フレーム全体（ノイズ除去＋強調）
+    f"scale=1280:-2,{_OCR_POST}",
 ]
 
 _MIN_YEAR = 1950
 _MAX_YEAR = 2099
 
-# 4桁年が先頭: 2001.8.15 / 2001/08/15 / 2001-8-15 / 2001年8月15日
+# 区切りは句読点（. , / -）か空白、和暦区切り（年月）を1つ以上許容する。
+# 古いカメラのスタンプはOCRで細い句読点が落ちて空白だけになることが多い。
+_SEP_YM = r"[.,/\s\-年]+"
+_SEP_MD = r"[.,/\s\-月]+"
+# 4桁年が先頭: 2001.8.15 / 2001/08/15 / 1997. 7.27 / 2001年8月15日
 _YMD4_RE = re.compile(
-    r"(19[5-9]\d|20\d{2})\s*[.,/\-年]\s*(\d{1,2})\s*[.,/\-月]\s*(\d{1,2})"
+    r"(19[5-9]\d|20\d{2})" + _SEP_YM + r"(\d{1,2})" + _SEP_MD + r"(\d{1,2})"
 )
-# 4桁年が末尾: 8.15.2001 / 15/8/2001
+# 4桁年が末尾: 8.15.2001 / 15/8/2001（空白区切りは誤検出を招くため句読点のみ）
 _XXY4_RE = re.compile(
     r"\b(\d{1,2})\s*[.,/\-]\s*(\d{1,2})\s*[.,/\-]\s*(19[5-9]\d|20\d{2})\b"
 )
-# 2桁年が先頭: 95.8.15 / 01-8-15
+# 2桁年が先頭: 95.8.15 / 01-8-15（空白区切りは誤検出を招くため句読点のみ）
 _YMD2_RE = re.compile(
     r"\b(\d{2})\s*[.,/\-]\s*(\d{1,2})\s*[.,/\-]\s*(\d{1,2})\b"
 )
@@ -119,34 +128,44 @@ def _ocr_image_lines(image_path: Path) -> list[str]:
 
     lines = []
     for observation in request.results() or []:
-        candidates = observation.topCandidates_(1)
-        if candidates:
-            lines.append(str(candidates[0].string()))
+        # 上位2候補まで見る（VHSの読みづらい字は2番目が正しいことがある）
+        for candidate in observation.topCandidates_(2) or []:
+            lines.append(str(candidate.string()))
     return lines
 
 
-def detect_date_at_time(
+def _candidate_dates_in_frame(
     runner: FFmpegRunner,
     video_path: Path,
     time_sec: float,
     work_dir: Path,
-) -> Optional[date]:
-    """指定時刻のフレームから焼き込み日付を検出する"""
+    frame_id: int,
+) -> list[date]:
+    """1フレームを複数領域でOCRし、見つかった日付候補をすべて返す"""
+    candidates: list[date] = []
     for region_index, video_filter in enumerate(_REGION_FILTERS):
-        frame_path = work_dir / f"datecheck_{int(time_sec * 1000)}_{region_index}.jpg"
+        frame_path = work_dir / f"datecheck_{frame_id}_{region_index}.png"
         if not runner.extract_frame(video_path, time_sec, frame_path, video_filter):
             continue
         try:
             for line in _ocr_image_lines(frame_path):
                 detected = parse_date_from_text(line)
                 if detected:
-                    return detected
+                    candidates.append(detected)
         finally:
             try:
                 frame_path.unlink()
             except OSError:
                 pass
-    return None
+    return candidates
+
+
+def _sample_times(start: float, end: float) -> list[float]:
+    """シーン内のサンプリング時刻（遷移フレームを避け25/50/75%地点）"""
+    duration = max(0.0, end - start)
+    if duration <= 1.5:
+        return [start + duration / 2]
+    return [start + duration * r for r in (0.5, 0.25, 0.75)]
 
 
 def detect_scene_dates(
@@ -157,6 +176,9 @@ def detect_scene_dates(
 ) -> dict[int, date]:
     """各シーンの焼き込み日付を検出する。
 
+    スタンプはシーン中ほぼ一定なので、複数フレーム×複数領域で読み取り、
+    同じ日付が2回出たら確定（OCR誤読への保険）。一致しない場合は最多得票を採用。
+
     Args:
         scene_times: (シーン番号, 開始秒, 終了秒) のリスト
         progress_callback: (処理済みシーン数, 全シーン数) を受け取る
@@ -164,6 +186,8 @@ def detect_scene_dates(
     Returns:
         {シーン番号: 検出した日付}（検出できたシーンのみ）
     """
+    from collections import Counter
+
     runner = FFmpegRunner()
     results: dict[int, date] = {}
 
@@ -174,19 +198,26 @@ def detect_scene_dates(
             if cancel_callback is not None and cancel_callback():
                 break
 
-            duration = max(0.0, end - start)
-            # スタンプはシーン中ほぼ一定なので、序盤と中間の2点を試す
-            sample_times = [start + min(0.5, duration / 2)]
-            if duration > 2.0:
-                sample_times.append(start + duration / 2)
+            votes: Counter = Counter()
+            confirmed: Optional[date] = None
 
-            for time_sec in sample_times:
+            for frame_id, time_sec in enumerate(_sample_times(start, end)):
                 if cancel_callback is not None and cancel_callback():
                     break
-                detected = detect_date_at_time(runner, video_path, time_sec, work_dir)
-                if detected:
-                    results[index] = detected
+                for detected in _candidate_dates_in_frame(
+                    runner, video_path, time_sec, work_dir, frame_id
+                ):
+                    votes[detected] += 1
+                    if votes[detected] >= 2:
+                        confirmed = detected
+                        break
+                if confirmed is not None:
                     break
+
+            if confirmed is None and votes:
+                confirmed = votes.most_common(1)[0][0]
+            if confirmed is not None:
+                results[index] = confirmed
 
             if progress_callback is not None:
                 progress_callback(done + 1, len(scene_times))

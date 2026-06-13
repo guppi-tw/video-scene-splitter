@@ -12,6 +12,21 @@ def test_parse_ymd_with_padded_spaces():
     assert parse_date_from_text("2001. 8.15") == date(2001, 8, 15)
 
 
+def test_parse_vhs_stamp_with_space_before_month():
+    # 実機VHSの例: "1997. 7.27"（月の前にスペース）
+    assert parse_date_from_text("1997. 7.27") == date(1997, 7, 27)
+
+
+def test_parse_ymd_with_space_only_separators():
+    # OCRが細い句読点を落として空白だけになるケース
+    assert parse_date_from_text("1997 7 27") == date(1997, 7, 27)
+
+
+def test_time_line_is_not_parsed_as_date():
+    # 日付の下に出る時刻 "PM 5:27" を日付と誤認しない
+    assert parse_date_from_text("PM 5:27") is None
+
+
 def test_parse_ymd_with_slashes():
     assert parse_date_from_text("1995/12/24") == date(1995, 12, 24)
 
