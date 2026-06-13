@@ -147,6 +147,7 @@ class MainWindow(QMainWindow):
 
         # クリップリスト → シーン結合
         self.clip_list_widget.merge_requested.connect(self._on_merge_scenes_requested)
+        self.clip_list_widget.short_merge_requested.connect(self._on_short_merge_requested)
 
         # クリップリスト → 日付検出
         self.clip_list_widget.date_detect_requested.connect(self._on_date_detect_requested)
@@ -611,18 +612,42 @@ class MainWindow(QMainWindow):
             self._propose_short_scene_merge()
         self._start_date_detection(auto=True)
 
-    def _propose_short_scene_merge(self):
-        """検出後、短いシーンが残っていれば結合を提案する"""
+    def _protected_boundaries_from_dropped(self) -> List[float]:
+        """除外(keep=False)シーンの境界を保護対象として返す。
+
+        統合提案がつなぎ目などの除外シーンを隣の採用クリップに飲み込まないよう、
+        現在のシーン構成から動的に求める（自動・手動どちらの呼び出しでも正しい）。
+        """
+        if not self.current_job or not self.current_job.scenes:
+            return []
+        scenes = self.current_job.scenes
+        duration = scenes[-1].end_time
+        protected = []
+        for scene in scenes:
+            if not scene.keep:
+                protected.append(scene.start_time)
+                if scene.end_time < duration:
+                    protected.append(scene.end_time)
+        return protected
+
+    def _propose_short_scene_merge(self, manual: bool = False):
+        """短いシーンが残っていれば結合を提案する（manual=Trueで手動起動）"""
         if not self.current_job or not self.current_job.scenes:
             return
 
         duration = self.current_job.scenes[-1].end_time
         boundaries = self.timeline_widget.get_boundaries()
-        protected = getattr(self, "_blank_protected_times", [])
+        protected = self._protected_boundaries_from_dropped()
 
         # 検出設定の最小シーン長より少し広めの初期値で提案する
         initial = max(3.0, self.timeline_widget.min_scene_spin.value())
         if len(absorb_short_scenes(boundaries, duration, initial, protected)) >= len(boundaries):
+            if manual:
+                QMessageBox.information(
+                    self, "短いシーンの結合",
+                    "この長さで結合できる短いシーンはありませんでした。\n"
+                    "（提案ダイアログで秒数を上げても確認できます）"
+                )
             return
 
         dialog = MergeProposalDialog(
@@ -634,6 +659,13 @@ class MainWindow(QMainWindow):
             self.log_widget.append_log(
                 f"短いシーン {merged_count} 個を隣のシーンに統合しました"
             )
+
+    def _on_short_merge_requested(self):
+        """クリップ一覧から手動で結合提案を出す"""
+        if not self.current_job or not self.current_job.scenes:
+            QMessageBox.information(self, "短いシーンの結合", "先に動画を開いてください。")
+            return
+        self._propose_short_scene_merge(manual=True)
 
     def _on_scene_detection_error(self, message: str):
         """シーン自動検出エラー"""

@@ -179,6 +179,7 @@ class ClipListWidget(QWidget):
     export_requested = Signal(object, object, bool)  # VideoJob, output_dir, auto_split
     clip_preview_requested = Signal(float)  # start_time
     merge_requested = Signal(list)  # 結合対象のシーン番号リスト（昇順・連続）
+    short_merge_requested = Signal()  # 短いシーンの結合提案を手動で出す
     date_detect_requested = Signal()
     date_detect_cancel_requested = Signal()
 
@@ -227,6 +228,12 @@ class ClipListWidget(QWidget):
         self.merge_hint_label.setStyleSheet("color: #888; font-size: 10px;")
         merge_layout.addWidget(self.merge_hint_label)
         merge_layout.addStretch()
+
+        self.btn_short_merge = QPushButton("短いシーンを結合")
+        self.btn_short_merge.setToolTip("短いシーンをまとめる結合提案をもう一度出します")
+        self.btn_short_merge.setEnabled(False)
+        self.btn_short_merge.clicked.connect(self.short_merge_requested.emit)
+        merge_layout.addWidget(self.btn_short_merge)
 
         self._date_detecting = False
         self.btn_date_detect = QPushButton("日付検出")
@@ -304,12 +311,14 @@ class ClipListWidget(QWidget):
 
         if not self._date_detecting:
             self.btn_date_detect.setEnabled(True)
+        self.btn_short_merge.setEnabled(True)
         self.refresh_clips()
 
     def clear(self):
         """クリップ一覧を空にする"""
         self.current_job = None
         self.btn_date_detect.setEnabled(False)
+        self.btn_short_merge.setEnabled(False)
         for row in self._clip_rows:
             row.setParent(None)
             row.deleteLater()
