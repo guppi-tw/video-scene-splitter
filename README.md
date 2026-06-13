@@ -16,10 +16,18 @@ Video Scene Splitter は、長尺の家庭用動画や VHS 取り込み動画を
 - 1 回の追加操作で読み込む動画数を最大 100 本に制限
 - アプリ内プレビュー再生
 - PySceneDetect によるシーン境界の自動検出候補追加
+  - 感度（閾値）と最小シーン長を UI から調整可能
+  - 検出中の進捗表示と途中中止
+- 検出後の自動ワークフロー: つなぎ目検出 → 短いシーンの結合提案 → 日付検出
+- 単色のつなぎ目（青一色 / 黒一色 / 白一色）の検出と除外提案（昔のテープの無信号区間など）
+- 短いシーンをまとめて結合する提案ダイアログ（結合後のシーン数をプレビュー）
+- クリップ一覧から連続シーンを選択してまとめて結合
+- 焼き込み日付（昔のビデオカメラの日付スタンプ）の OCR 検出とクリップ日付への自動設定（macOS）
 - タイムライン上での分割位置の追加、移動、削除
 - クリップごとの keep / drop 切り替え
 - クラウド共有前に確認したいクリップの「要注意」マーキングと別フォルダ書き出し
 - イベント名、日付、ファイル名のメタデータ設定
+- 書き出し時に日付を動画の作成日時（creation_time）メタデータとファイル更新日時へ書き込み
 - 595 秒単位の自動分割書き出し
 - ffmpeg によるサムネイル生成と MP4 書き出し
 - Windows EXE / macOS アプリ用の PyInstaller ビルドスクリプト
@@ -30,6 +38,8 @@ Video Scene Splitter は、長尺の家庭用動画や VHS 取り込み動画を
 - ffmpeg
   - `scripts/setup_ffmpeg.py` で `vendor/ffmpeg/` に配置できます
   - または、システムの PATH にある ffmpeg を使用できます
+  - macOS では Apple Silicon ネイティブ（arm64）バイナリを取得します
+- 焼き込み日付の OCR 検出は macOS の Vision フレームワークを使用します（`pyobjc-framework-Vision`、macOS のみ。他機能は全プラットフォームで動作します）
 
 ## Quick Start
 
@@ -75,10 +85,14 @@ python -m app
 
 1. 「ファイル追加」または「フォルダ追加」で MP4 をキューに追加します。1 回に追加できる動画は最大 100 本です。
 2. キューから動画を開くと、動画全体が 1 つのシーンとして読み込まれます。
-3. プレビューの「ここで分割」ボタン、タイムライン操作、またはタイムラインの「自動検出」で分割位置を追加します。
-4. 右側のクリップ一覧で keep / drop、イベント名、日付、ファイル名を調整します。
-5. 子供のプールなどクラウド共有前に確認したいクリップは「要注意」にします。
-6. 「書き出し」から出力先フォルダを選択します。
+3. プレビューの「ここで分割」ボタン、タイムライン操作、またはタイムラインの「自動検出」で分割位置を追加します。感度と最小シーン長は自動検出の前に調整できます。
+4. 自動検出が終わると、続けて次の処理が走ります。
+   - 単色のつなぎ目（青 / 黒 / 白一色）を検出し、除外するか提案します。
+   - 短いシーンをまとめて結合するか提案します（結合する長さの上限はシーン数のプレビューを見ながら調整できます）。
+   - 焼き込み日付を検出し、見つかればクリップの日付に設定します（macOS）。
+5. 右側のクリップ一覧で keep / drop、イベント名、日付、ファイル名を調整します。連続するシーンはチェックして「選択を結合」でまとめられます。
+6. 子供のプールなどクラウド共有前に確認したいクリップは「要注意」にします。
+7. 「書き出し」から出力先フォルダを選択します。
 
 ### Timeline Controls
 
@@ -102,7 +116,7 @@ python -m app
 
 ## Output
 
-書き出し時は、keep 対象のシーンがメタデータごとにフォルダ分けされます。自動分割が有効な場合、長いシーンは 595 秒単位に分割されます。
+書き出し時は、keep 対象のシーンがメタデータごとにフォルダ分けされます。自動分割が有効な場合、長いシーンは 595 秒単位に分割されます。クリップに日付が設定されている場合は、動画の作成日時（creation_time）メタデータとファイルの更新日時にも反映されるため、写真アプリや Finder で日付順に並びます。
 
 ```text
 output/
@@ -203,12 +217,17 @@ video-scene-splitter/
       exporter.py           # Clip calculation and export orchestration
       ffmpeg_runner.py      # ffmpeg process wrapper
       jobs.py               # Job, scene, and clip data models
+      scene_detector.py     # PySceneDetect boundary detection and short-scene merging
+      blank_detector.py     # Solid-color (blue/black/white) join detection
+      date_detector.py      # Burned-in date stamp OCR (macOS Vision)
     ui/
       main_window.py        # Main window
       queue_widget.py       # Video queue
       preview_widget.py     # Video preview
       timeline_widget.py    # Timeline editor
       clip_list_widget.py   # Clip list and metadata editor
+      merge_dialog.py       # Short-scene merge proposal dialog
+      blank_dialog.py       # Solid-color join removal proposal dialog
       workers.py            # Background workers
   scripts/
     setup_ffmpeg.py         # ffmpeg downloader
