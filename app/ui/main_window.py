@@ -52,7 +52,7 @@ class MainWindow(QMainWindow):
         self.blank_detection_worker: BlankDetectionWorker = None
         self._propose_merge_after_blank = False
         self._blank_manual = False
-        self._blank_protected_times: List[float] = []
+        self._pending_blank_segments: Optional[list] = None
         self.batch_detection_thread: QThread = None
         self.batch_detection_worker: BatchSceneDetectionWorker = None
 
@@ -555,6 +555,7 @@ class MainWindow(QMainWindow):
             return
 
         self._blank_manual = manual
+        self._pending_blank_segments = None
         self.log_widget.append_log("つなぎ目（単色）を検出中...")
         self.log_widget.set_status("つなぎ目検出中")
         self.clip_list_widget.set_blank_detecting(True)
@@ -577,8 +578,17 @@ class MainWindow(QMainWindow):
         self.log_widget.set_detail(f"つなぎ目検出中: {percent}%")
 
     def _on_blank_detect_complete(self, segments: list):
-        """つなぎ目検出完了。単色区間に境界を入れて除外を提案する。"""
-        self._blank_protected_times = []
+        """つなぎ目検出の結果を受け取る（保持のみ）。
+
+        ここでモーダルを開くと、続けてキューされる finished シグナルが
+        その exec() のネストイベントループ中に走り、結合提案モーダルが
+        つなぎ目モーダルより先に重なって出てしまう。実際の表示・連鎖は
+        スレッド片付け後の _on_blank_detect_finished で一直線に行う。
+        """
+        self._pending_blank_segments = segments
+
+    def _apply_blank_segments(self, segments: list):
+        """つなぎ目除外ダイアログを出し、承認なら単色区間を切り出して除外する"""
         if not self.current_job or not self.current_job.scenes or not segments:
             return
 
@@ -597,15 +607,12 @@ class MainWindow(QMainWindow):
 
         # 単色区間の端に境界を追加して、区間だけを独立したシーンに切り出す
         boundaries = set(self.timeline_widget.get_boundaries())
-        protected = []
         for s, e, _label in segs:
             for edge in (s, e):
                 edge = round(edge, 3)
                 if 0.0 < edge < duration:
                     boundaries.add(edge)
-                    protected.append(edge)
         self.timeline_widget.replace_boundaries(sorted(boundaries))
-        self._blank_protected_times = protected
 
         # 単色区間内に入るシーンを除外（keepオフ）
         dropped = 0
@@ -625,7 +632,11 @@ class MainWindow(QMainWindow):
         self.log_widget.append_log(f"[ERROR] {message}")
 
     def _on_blank_detect_finished(self):
-        """つなぎ目検出スレッドを片付ける。自動実行時のみ統合提案・日付検出へ連鎖。"""
+        """スレッドを片付けてから、つなぎ目除外→結合提案→日付検出を順に行う。
+
+        全モーダルをこの1スロット内で逐次実行することで、表示順を保証する
+        （つなぎ目ダイアログ → 結合提案ダイアログ）。
+        """
         if self.sender() is not self.blank_detection_worker:
             return
         self.log_widget.hide_progress()
@@ -638,11 +649,19 @@ class MainWindow(QMainWindow):
         if self.current_job:
             self.log_widget.set_status(f"編集中: {self.current_job.filename}")
 
-        # 手動起動時は後続の連鎖をしない（つなぎ目除外だけで完了）
-        if self._blank_manual:
+        manual = self._blank_manual
+        segments = self._pending_blank_segments
+        self._pending_blank_segments = None
+
+        # 1) つなぎ目（単色）の除外提案
+        if segments:
+            self._apply_blank_segments(segments)
+
+        # 手動起動時はここで完了（連鎖しない）
+        if manual:
             return
 
-        # 自動実行時のみ: つなぎ目処理 → 統合提案 → 日付検出
+        # 自動実行時のみ: 2) 結合提案 → 3) 日付検出
         if getattr(self, "_propose_merge_after_blank", False):
             self._propose_short_scene_merge()
         self._start_date_detection(auto=True)
