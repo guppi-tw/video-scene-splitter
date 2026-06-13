@@ -132,3 +132,6 @@ VideoSceneSplitter.spec
 
 # Generated icon intermediates (icon.icns is committed)
 assets/icon.iconset/
+
+# Codex local tooling (machine-specific hooks)
+.codex/

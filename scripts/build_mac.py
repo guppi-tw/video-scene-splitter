@@ -140,14 +140,25 @@ def build_app(project_root: Path, arch: str):
     # distとbuildディレクトリをクリーンアップ
     dist_dir = project_root / "dist"
     build_dir = project_root / "build"
-    
-    if dist_dir.exists():
-        print("既存のdistディレクトリを削除中...")
-        shutil.rmtree(dist_dir)
-    
-    if build_dir.exists():
-        print("既存のbuildディレクトリを削除中...")
-        shutil.rmtree(build_dir)
+
+    def rmtree_with_retry(path: Path, label: str):
+        """Spotlight等が削除中にファイルを触ると Directory not empty で
+        失敗することがあるため、少し待ってリトライする"""
+        import time
+        for attempt in range(3):
+            if not path.exists():
+                return
+            print(f"既存の{label}ディレクトリを削除中...")
+            try:
+                shutil.rmtree(path)
+                return
+            except OSError:
+                if attempt == 2:
+                    raise
+                time.sleep(1.0)
+
+    rmtree_with_retry(dist_dir, "dist")
+    rmtree_with_retry(build_dir, "build")
     
     # ffmpegの同梱データを準備
     ffmpeg_dir = project_root / "vendor" / "ffmpeg"

@@ -25,7 +25,9 @@ from pathlib import Path
 
 # ffmpeg静的ビルドのダウンロードURL
 # https://github.com/BtbN/FFmpeg-Builds (Windows/Linux)
-# https://evermeet.cx/ffmpeg/ (macOS)
+# https://ffmpeg.martin-riedl.de/ (macOS: amd64/arm64 それぞれネイティブビルド)
+# 注意: evermeet.cx は x86_64 専用ビルドのみで、Apple Siliconでは
+# Rosetta経由の実行になるため使用しない（macOS 28以降はRosetta廃止予定）
 FFMPEG_URLS = {
     "Windows": {
         "x86_64": "https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-win64-gpl.zip",
@@ -34,14 +36,13 @@ FFMPEG_URLS = {
         "x86_64": "https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-linux64-gpl.tar.xz",
     },
     "Darwin": {
-        # macOS用は evermeet.cx から取得（arm64/x64両対応のユニバーサルバイナリ）
         "x86_64": {
-            "ffmpeg": "https://evermeet.cx/ffmpeg/getrelease/zip",
-            "ffprobe": "https://evermeet.cx/ffmpeg/getrelease/ffprobe/zip",
+            "ffmpeg": "https://ffmpeg.martin-riedl.de/redirect/latest/macos/amd64/release/ffmpeg.zip",
+            "ffprobe": "https://ffmpeg.martin-riedl.de/redirect/latest/macos/amd64/release/ffprobe.zip",
         },
         "arm64": {
-            "ffmpeg": "https://evermeet.cx/ffmpeg/getrelease/zip",
-            "ffprobe": "https://evermeet.cx/ffmpeg/getrelease/ffprobe/zip",
+            "ffmpeg": "https://ffmpeg.martin-riedl.de/redirect/latest/macos/arm64/release/ffmpeg.zip",
+            "ffprobe": "https://ffmpeg.martin-riedl.de/redirect/latest/macos/arm64/release/ffprobe.zip",
         },
     },
 }
