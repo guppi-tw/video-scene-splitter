@@ -8,9 +8,10 @@ import os
 if getattr(sys, 'frozen', False):
     # PyInstallerでビルドされた場合
     application_path = os.path.dirname(sys.executable)
-    # 一時展開ディレクトリをパスに追加
-    if hasattr(sys, '_MEIPASS'):
-        sys.path.insert(0, sys._MEIPASS)
+    # 注意: sys._MEIPASS を sys.path に追加してはいけない。
+    # cv2 のローダーがネイティブ拡張を再importする際に cv2/__init__.py が
+    # 先に解決されてしまい「recursion is detected」エラーになる。
+    # PyInstaller自身が必要なパスを設定済み。
 else:
     # 通常のPython実行
     application_path = os.path.dirname(os.path.abspath(__file__))
