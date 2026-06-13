@@ -622,9 +622,11 @@ class MainWindow(QMainWindow):
         self.log_widget.set_detail(f"日付検出中: {percent}%")
 
     def _on_date_detect_complete(self, results: dict):
-        """日付検出完了。検出した日付を各シーンに設定する"""
+        """日付検出完了。検出した日付を各シーンに設定し、欠損は前後から補完する"""
         if not self.current_job:
             return
+
+        from app.core.date_detector import infer_missing_dates
 
         applied = 0
         for scene in self.current_job.scenes:
@@ -633,18 +635,34 @@ class MainWindow(QMainWindow):
                 scene.event_date = detected
                 applied += 1
 
+        # 検出できなかったシーンを前後のシーンの日付から補完する
+        scene_indices = [s.index for s in self.current_job.scenes]
+        inferred = infer_missing_dates(scene_indices, results) if applied > 0 else {}
+        for scene in self.current_job.scenes:
+            if scene.index in inferred:
+                scene.event_date = inferred[scene.index]
+
         total = len(self.current_job.scenes)
+        inferred_count = len(inferred)
+
         if applied > 0:
             self.clip_list_widget.refresh_clips()
-            self.log_widget.append_log(
-                f"日付検出: {applied}/{total} シーンで日付を検出して設定しました"
-            )
+            msg = f"日付検出: {applied}/{total} シーンで日付を検出して設定しました"
+            if inferred_count > 0:
+                nums = "、".join(f"#{i}" for i in sorted(inferred))
+                msg += f"（さらに {inferred_count} シーンを前後から推定: {nums}）"
+            self.log_widget.append_log(msg)
             if not self._date_detect_auto:
+                extra = (
+                    f"\n\n検出できなかった {inferred_count} シーンは前後のクリップから\n"
+                    "日付を推定して設定しました（必要なら手動で修正できます）。"
+                    if inferred_count > 0 else ""
+                )
                 QMessageBox.information(
                     self,
                     "日付検出完了",
                     f"{applied}/{total} シーンで焼き込み日付を検出し、\n"
-                    f"クリップの日付に設定しました。\n\n"
+                    f"クリップの日付に設定しました。{extra}\n\n"
                     f"ファイル名のプレビューで確認できます。",
                 )
         else:

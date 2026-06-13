@@ -1,6 +1,46 @@
 from datetime import date
 
-from app.core.date_detector import parse_date_from_text
+from app.core.date_detector import infer_missing_dates, parse_date_from_text
+
+
+def test_infer_fills_gap_between_equal_neighbours():
+    detected = {1: date(1997, 1, 1), 3: date(1997, 1, 1)}
+    # シーン2は前後が同じ → 1997-01-01 で補完
+    assert infer_missing_dates([1, 2, 3], detected) == {2: date(1997, 1, 1)}
+
+
+def test_infer_carries_previous_date_forward():
+    detected = {1: date(1997, 2, 15), 3: date(1997, 2, 16)}
+    # シーン2は直前の日付を引き継ぐ
+    assert infer_missing_dates([1, 2, 3], detected) == {2: date(1997, 2, 15)}
+
+
+def test_infer_backfills_leading_gap():
+    detected = {3: date(1997, 5, 6)}
+    # 先頭側の欠損は直後の検出済み日付で補う
+    assert infer_missing_dates([1, 2, 3], detected) == {
+        1: date(1997, 5, 6),
+        2: date(1997, 5, 6),
+    }
+
+
+def test_infer_forward_fills_trailing_gap():
+    detected = {1: date(1997, 5, 6)}
+    # 末尾の欠損は直前の日付を引き継ぐ
+    assert infer_missing_dates([1, 2, 3], detected) == {
+        2: date(1997, 5, 6),
+        3: date(1997, 5, 6),
+    }
+
+
+def test_infer_returns_empty_without_any_detection():
+    assert infer_missing_dates([1, 2, 3], {}) == {}
+
+
+def test_infer_does_not_override_detected():
+    detected = {1: date(1997, 1, 1), 2: date(1997, 2, 2), 3: date(1997, 3, 3)}
+    # 全て検出済み → 補完なし
+    assert infer_missing_dates([1, 2, 3], detected) == {}
 
 
 def test_parse_ymd_with_dots():

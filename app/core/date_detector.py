@@ -103,6 +103,40 @@ def parse_date_from_text(text: str) -> Optional[date]:
     return None
 
 
+def infer_missing_dates(
+    scene_indices: list[int],
+    detected: dict[int, date],
+) -> dict[int, date]:
+    """検出できなかったシーンの日付を前後のシーンから補完する。
+
+    シーン順（scene_indices の並び）に対し、欠損は直前の検出済み日付を
+    引き継ぐ（前方補完）。先頭側の欠損は直後の検出済み日付で補う（後方補完）。
+    検出が1件も無ければ何も補完しない。
+
+    Returns:
+        {シーン番号: 補完した日付}（補完したシーンのみ。検出済みは含めない）
+    """
+    inferred: dict[int, date] = {}
+
+    # 前方補完: 直前の検出済み日付を引き継ぐ
+    last: Optional[date] = None
+    for index in scene_indices:
+        if index in detected:
+            last = detected[index]
+        elif last is not None:
+            inferred[index] = last
+
+    # 後方補完: 先頭側の未補完の欠損を直後の検出済み日付で補う
+    nxt: Optional[date] = None
+    for index in reversed(scene_indices):
+        if index in detected:
+            nxt = detected[index]
+        elif index not in inferred and nxt is not None:
+            inferred[index] = nxt
+
+    return inferred
+
+
 def _ocr_image_lines(image_path: Path) -> list[str]:
     """画像内のテキスト行をOCRで読み取る（macOS Vision使用）"""
     try:
