@@ -43,3 +43,52 @@ def test_get_bundled_ffmpeg_path_finds_pyinstaller_vendor_binary(tmp_path, monke
     )
 
     assert ffmpeg_runner.get_bundled_ffmpeg_path() == bundled_ffmpeg
+
+
+def test_extract_clip_writes_creation_time_metadata(tmp_path, monkeypatch):
+    from datetime import date
+
+    runner = ffmpeg_runner.FFmpegRunner()
+    captured = {}
+
+    class FakeProcess:
+        def communicate(self, timeout=None):
+            # 成功をシミュレートするため出力ファイルを作る
+            Path(captured["cmd"][-1]).write_bytes(b"x")
+            return b"", b""
+
+    def fake_popen(cmd, **kwargs):
+        captured["cmd"] = cmd
+        return FakeProcess()
+
+    monkeypatch.setattr(ffmpeg_runner.subprocess, "Popen", fake_popen)
+
+    output = tmp_path / "clip.mp4"
+    ok = runner.extract_clip(
+        Path("input.mp4"), 0.0, 1.0, output,
+        creation_date=date(2001, 8, 15),
+    )
+
+    assert ok
+    idx = captured["cmd"].index("-metadata")
+    assert captured["cmd"][idx + 1] == "creation_time=2001-08-15T00:00:00"
+
+
+def test_extract_clip_omits_metadata_without_date(tmp_path, monkeypatch):
+    runner = ffmpeg_runner.FFmpegRunner()
+    captured = {}
+
+    class FakeProcess:
+        def communicate(self, timeout=None):
+            Path(captured["cmd"][-1]).write_bytes(b"x")
+            return b"", b""
+
+    monkeypatch.setattr(
+        ffmpeg_runner.subprocess, "Popen",
+        lambda cmd, **kw: (captured.update(cmd=cmd), FakeProcess())[1],
+    )
+
+    ok = runner.extract_clip(Path("input.mp4"), 0.0, 1.0, tmp_path / "clip.mp4")
+
+    assert ok
+    assert "-metadata" not in captured["cmd"]

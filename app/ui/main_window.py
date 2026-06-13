@@ -18,10 +18,13 @@ from app.core.time_format import format_seconds
 from app.ui.queue_widget import QueueWidget
 from app.ui.clip_list_widget import ClipListWidget
 from app.ui.log_widget import LogWidget
+from app.ui.merge_dialog import MergeProposalDialog
 from app.ui.preview_widget import PreviewWidget
 from app.ui.timeline_widget import TimelineWidget
-from app.ui.workers import ThumbnailWorker, ExportWorker, SceneDetectionWorker
-from app.core.scene_detector import merge_boundaries
+from app.ui.workers import (
+    ThumbnailWorker, ExportWorker, SceneDetectionWorker, DateDetectionWorker
+)
+from app.core.scene_detector import absorb_short_scenes, merge_boundaries
 
 
 class MainWindow(QMainWindow):
@@ -40,6 +43,9 @@ class MainWindow(QMainWindow):
         self.export_worker: ExportWorker = None
         self.scene_detection_thread: QThread = None
         self.scene_detection_worker: SceneDetectionWorker = None
+        self.date_detection_thread: QThread = None
+        self.date_detection_worker: DateDetectionWorker = None
+        self._date_detect_auto = False
 
         # Undo履歴（境界のスナップショット）
         # 境界が変わるたびに変更前の状態を積む（分割・ドラッグ・追加・削除・
@@ -121,12 +127,20 @@ class MainWindow(QMainWindow):
         # タイムライン → 境界変更
         self.timeline_widget.boundaries_changed.connect(self._on_boundaries_changed)
         self.timeline_widget.auto_detect_requested.connect(self._on_auto_detect_requested)
+        self.timeline_widget.auto_detect_cancel_requested.connect(self._on_auto_detect_cancel)
 
         # クリップリスト → プレビュー
         self.clip_list_widget.clip_preview_requested.connect(self._on_clip_preview)
 
         # クリップリスト → 書き出し
         self.clip_list_widget.export_requested.connect(self._on_export_requested)
+
+        # クリップリスト → シーン結合
+        self.clip_list_widget.merge_requested.connect(self._on_merge_scenes_requested)
+
+        # クリップリスト → 日付検出
+        self.clip_list_widget.date_detect_requested.connect(self._on_date_detect_requested)
+        self.clip_list_widget.date_detect_cancel_requested.connect(self._on_date_detect_cancel)
 
     def _on_job_selected(self, job: VideoJob):
         """ジョブ選択時（既に編集中のジョブを表示）"""
@@ -158,6 +172,14 @@ class MainWindow(QMainWindow):
                 self.scene_detection_thread.wait()
                 self.scene_detection_thread = None
                 self.scene_detection_worker = None
+            if self.date_detection_thread and self.date_detection_thread.isRunning():
+                if self.date_detection_worker:
+                    self.date_detection_worker.cancel()
+                self.date_detection_thread.quit()
+                self.date_detection_thread.wait()
+                self.date_detection_thread = None
+                self.date_detection_worker = None
+                self.clip_list_widget.set_date_detecting(False)
 
         self.job_queue.remove_job(job_id)
         self.queue_widget.refresh()
@@ -312,6 +334,26 @@ class MainWindow(QMainWindow):
         """クリップのプレビュー再生"""
         self.preview_widget.play_from(start_time)
 
+    def _on_merge_scenes_requested(self, scene_indexes: List[int]):
+        """選択された連続シーンを1つに結合"""
+        if not self.current_job or len(scene_indexes) < 2:
+            return
+
+        boundaries = self.timeline_widget.get_boundaries()
+        # シーン#i（1始まり）の開始境界は boundaries[i-1]。
+        # 先頭以外の選択シーンの開始境界を取り除くと1つに結合される
+        remove_positions = {i - 1 for i in scene_indexes[1:]}
+        new_boundaries = [
+            b for pos, b in enumerate(boundaries) if pos not in remove_positions
+        ]
+
+        # replace_boundaries が boundaries_changed を発火し、
+        # シーン再構築・Undo履歴・サムネイル再利用まで既存フローに乗る
+        self.timeline_widget.replace_boundaries(new_boundaries)
+        self.log_widget.append_log(
+            f"シーン #{scene_indexes[0]}〜#{scene_indexes[-1]} を結合しました"
+        )
+
     def _on_auto_detect_requested(self):
         """シーン境界の自動検出を開始"""
         if not self.current_job or not self.current_job.scenes:
@@ -324,18 +366,35 @@ class MainWindow(QMainWindow):
         duration = self.current_job.scenes[-1].end_time
         self.log_widget.append_log("シーン自動検出を準備中...")
         self.log_widget.set_status("シーン自動検出中")
-        self.timeline_widget.set_auto_detect_enabled(False)
+        self.timeline_widget.set_detecting(True)
 
         self.scene_detection_thread = QThread()
-        self.scene_detection_worker = SceneDetectionWorker(self.current_job, duration)
+        self.scene_detection_worker = SceneDetectionWorker(
+            self.current_job,
+            duration,
+            settings=self.timeline_widget.get_detection_settings(),
+        )
         self.scene_detection_worker.moveToThread(self.scene_detection_thread)
 
         self.scene_detection_thread.started.connect(self.scene_detection_worker.run)
         self.scene_detection_worker.progress.connect(self._on_progress)
+        self.scene_detection_worker.progress_percent.connect(self._on_detection_percent)
         self.scene_detection_worker.detection_complete.connect(self._on_scene_detection_complete)
         self.scene_detection_worker.error.connect(self._on_scene_detection_error)
+        self.scene_detection_worker.finished.connect(self._on_scene_detection_finished)
 
         self.scene_detection_thread.start()
+
+    def _on_auto_detect_cancel(self):
+        """シーン自動検出の中止リクエスト"""
+        if self.scene_detection_worker:
+            self.scene_detection_worker.cancel()
+            self.log_widget.append_log("シーン自動検出を中止しています...")
+
+    def _on_detection_percent(self, percent: int):
+        """シーン自動検出の進捗表示"""
+        self.log_widget.set_progress_bar(percent, 100)
+        self.log_widget.set_detail(f"シーン自動検出中: {percent}%")
 
     def _on_scene_detection_complete(self, detected_boundaries: list):
         """シーン自動検出完了"""
@@ -363,6 +422,33 @@ class MainWindow(QMainWindow):
         self.log_widget.set_status(f"編集中: {self.current_job.filename}")
         self._finish_scene_detection()
 
+        if added_count > 0:
+            self._propose_short_scene_merge()
+
+        # シーンが確定したら焼き込み日付の検出を自動実行
+        self._start_date_detection(auto=True)
+
+    def _propose_short_scene_merge(self):
+        """検出後、短いシーンが残っていれば結合を提案する"""
+        if not self.current_job or not self.current_job.scenes:
+            return
+
+        duration = self.current_job.scenes[-1].end_time
+        boundaries = self.timeline_widget.get_boundaries()
+
+        # 検出設定の最小シーン長より少し広めの初期値で提案する
+        initial = max(3.0, self.timeline_widget.min_scene_spin.value())
+        if len(absorb_short_scenes(boundaries, duration, initial)) >= len(boundaries):
+            return
+
+        dialog = MergeProposalDialog(boundaries, duration, initial, self)
+        if dialog.exec() == MergeProposalDialog.Accepted:
+            merged_count = dialog.merge_count()
+            self.timeline_widget.replace_boundaries(dialog.merged_boundaries())
+            self.log_widget.append_log(
+                f"短いシーン {merged_count} 個を隣のシーンに統合しました"
+            )
+
     def _on_scene_detection_error(self, message: str):
         """シーン自動検出エラー"""
         self.log_widget.append_log(f"[ERROR] {message}")
@@ -370,14 +456,126 @@ class MainWindow(QMainWindow):
         QMessageBox.warning(self, "シーン自動検出エラー", message)
         self._finish_scene_detection()
 
+    def _on_scene_detection_finished(self):
+        """シーン自動検出の終了処理（キャンセル時もここで後始末する）"""
+        # complete/errorハンドラが先に後始末を済ませた場合は何もしない
+        if self.sender() is not self.scene_detection_worker:
+            return
+        if self.current_job:
+            self.log_widget.set_status(f"編集中: {self.current_job.filename}")
+        self._finish_scene_detection()
+
     def _finish_scene_detection(self):
         """シーン自動検出スレッドを片付ける"""
+        self.log_widget.hide_progress()
         if self.scene_detection_thread:
             self.scene_detection_thread.quit()
             self.scene_detection_thread.wait()
             self.scene_detection_thread = None
             self.scene_detection_worker = None
+        self.timeline_widget.set_detecting(False)
         self.timeline_widget.set_auto_detect_enabled(self.current_job is not None)
+
+    def _on_date_detect_requested(self):
+        """焼き込み日付の検出を開始（手動）"""
+        self._start_date_detection(auto=False)
+
+    def _start_date_detection(self, auto: bool):
+        """焼き込み日付の検出を開始
+
+        auto=True の場合は自動実行（完了・エラーをログのみで通知し、
+        ダイアログは出さない）
+        """
+        if not self.current_job or not self.current_job.scenes:
+            return
+
+        if self.date_detection_thread and self.date_detection_thread.isRunning():
+            if not auto:
+                QMessageBox.warning(self, "警告", "日付検出中です")
+            return
+
+        self._date_detect_auto = auto
+        self.log_widget.append_log("焼き込み日付の検出を開始します...")
+        self.log_widget.set_status("日付検出中")
+        self.clip_list_widget.set_date_detecting(True)
+
+        self.date_detection_thread = QThread()
+        self.date_detection_worker = DateDetectionWorker(self.current_job)
+        self.date_detection_worker.moveToThread(self.date_detection_thread)
+
+        self.date_detection_thread.started.connect(self.date_detection_worker.run)
+        self.date_detection_worker.progress.connect(self._on_progress)
+        self.date_detection_worker.progress_percent.connect(self._on_date_detect_percent)
+        self.date_detection_worker.detection_complete.connect(self._on_date_detect_complete)
+        self.date_detection_worker.error.connect(self._on_date_detect_error)
+        self.date_detection_worker.finished.connect(self._on_date_detect_finished)
+
+        self.date_detection_thread.start()
+
+    def _on_date_detect_cancel(self):
+        """日付検出の中止リクエスト"""
+        if self.date_detection_worker:
+            self.date_detection_worker.cancel()
+            self.log_widget.append_log("日付検出を中止しています...")
+
+    def _on_date_detect_percent(self, percent: int):
+        self.log_widget.set_progress_bar(percent, 100)
+        self.log_widget.set_detail(f"日付検出中: {percent}%")
+
+    def _on_date_detect_complete(self, results: dict):
+        """日付検出完了。検出した日付を各シーンに設定する"""
+        if not self.current_job:
+            return
+
+        applied = 0
+        for scene in self.current_job.scenes:
+            detected = results.get(scene.index)
+            if detected is not None:
+                scene.event_date = detected
+                applied += 1
+
+        total = len(self.current_job.scenes)
+        if applied > 0:
+            self.clip_list_widget.refresh_clips()
+            self.log_widget.append_log(
+                f"日付検出: {applied}/{total} シーンで日付を検出して設定しました"
+            )
+            if not self._date_detect_auto:
+                QMessageBox.information(
+                    self,
+                    "日付検出完了",
+                    f"{applied}/{total} シーンで焼き込み日付を検出し、\n"
+                    f"クリップの日付に設定しました。\n\n"
+                    f"ファイル名のプレビューで確認できます。",
+                )
+        else:
+            self.log_widget.append_log("日付検出: 日付スタンプは見つかりませんでした")
+            if not self._date_detect_auto:
+                QMessageBox.information(
+                    self,
+                    "日付検出",
+                    "焼き込み日付は見つかりませんでした。\n"
+                    "日付表示が映像に映っているかご確認ください。",
+                )
+
+    def _on_date_detect_error(self, message: str):
+        self.log_widget.append_log(f"[ERROR] {message}")
+        if not self._date_detect_auto:
+            QMessageBox.warning(self, "日付検出エラー", message)
+
+    def _on_date_detect_finished(self):
+        """日付検出スレッドを片付ける"""
+        if self.sender() is not self.date_detection_worker:
+            return
+        self.log_widget.hide_progress()
+        if self.current_job:
+            self.log_widget.set_status(f"編集中: {self.current_job.filename}")
+        if self.date_detection_thread:
+            self.date_detection_thread.quit()
+            self.date_detection_thread.wait()
+            self.date_detection_thread = None
+            self.date_detection_worker = None
+        self.clip_list_widget.set_date_detecting(False)
 
     def _update_timeline(self, job: VideoJob):
         """タイムラインを更新"""
@@ -541,6 +739,16 @@ class MainWindow(QMainWindow):
                 border-radius: 2px;
                 padding: 3px 6px;
             }
+            QDoubleSpinBox, QSpinBox {
+                background-color: #333;
+                color: #d4d4d4;
+                border: 1px solid #555;
+                border-radius: 2px;
+                padding: 2px 4px;
+            }
+            QDoubleSpinBox:focus, QSpinBox:focus {
+                border-color: #007acc;
+            }
             QComboBox::drop-down {
                 border: none;
             }
@@ -681,6 +889,12 @@ class MainWindow(QMainWindow):
                 self.scene_detection_worker.cancel()
             self.scene_detection_thread.quit()
             self.scene_detection_thread.wait()
+
+        if self.date_detection_thread and self.date_detection_thread.isRunning():
+            if self.date_detection_worker:
+                self.date_detection_worker.cancel()
+            self.date_detection_thread.quit()
+            self.date_detection_thread.wait()
 
         if self.thumbnail_thread and self.thumbnail_thread.isRunning():
             if self.thumbnail_worker:

@@ -6,11 +6,12 @@ from dataclasses import dataclass
 
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QPushButton,
-    QLabel, QToolTip, QMenu
+    QLabel, QToolTip, QMenu, QDoubleSpinBox
 )
 from PySide6.QtCore import Qt, Signal, QRect, QPoint
 from PySide6.QtGui import QPainter, QColor, QPen, QBrush, QMouseEvent, QFont
 
+from app.core.scene_detector import SceneDetectionSettings
 from app.core.time_format import format_seconds
 
 
@@ -304,11 +305,13 @@ class TimelineWidget(QWidget):
     boundaries_changed = Signal(list)  # 新しい境界時刻リスト
     seek_requested = Signal(float)  # シーク要求（秒）
     auto_detect_requested = Signal()
-    
+    auto_detect_cancel_requested = Signal()
+
     def __init__(self):
         super().__init__()
         self.duration: float = 0.0
         self.scene_start_times: List[float] = []
+        self._detecting = False
         self._setup_ui()
     
     def _setup_ui(self):
@@ -325,10 +328,45 @@ class TimelineWidget(QWidget):
         
         header_layout.addStretch()
 
-        # 自動検出ボタン
+        # 検出設定: 閾値（感度）
+        label_threshold = QLabel("感度:")
+        label_threshold.setStyleSheet("color: #aaa; font-size: 11px;")
+        header_layout.addWidget(label_threshold)
+
+        self.threshold_spin = QDoubleSpinBox()
+        self.threshold_spin.setRange(0.5, 10.0)
+        self.threshold_spin.setSingleStep(0.5)
+        self.threshold_spin.setValue(3.0)
+        self.threshold_spin.setDecimals(1)
+        self.threshold_spin.setFixedWidth(60)
+        self.threshold_spin.setToolTip(
+            "シーン検出の閾値（デフォルト: 3.0）\n"
+            "小さくすると敏感になり分割が増え、大きくすると分割が減ります"
+        )
+        header_layout.addWidget(self.threshold_spin)
+
+        # 検出設定: 最小シーン長（秒）
+        label_min_len = QLabel("最小シーン長:")
+        label_min_len.setStyleSheet("color: #aaa; font-size: 11px;")
+        header_layout.addWidget(label_min_len)
+
+        self.min_scene_spin = QDoubleSpinBox()
+        self.min_scene_spin.setRange(0.0, 60.0)
+        self.min_scene_spin.setSingleStep(0.5)
+        self.min_scene_spin.setValue(2.0)
+        self.min_scene_spin.setDecimals(1)
+        self.min_scene_spin.setSuffix(" 秒")
+        self.min_scene_spin.setFixedWidth(75)
+        self.min_scene_spin.setToolTip(
+            "これより短いシーンは検出時に隣のシーンへ統合されます\n"
+            "細切れのクリップが大量にできる場合は値を大きくしてください（0で無効）"
+        )
+        header_layout.addWidget(self.min_scene_spin)
+
+        # 自動検出ボタン（検出中は「中止」ボタンになる）
         self.btn_auto_detect = QPushButton("自動検出")
         self.btn_auto_detect.setToolTip("映像の変化から分割候補を自動追加します")
-        self.btn_auto_detect.clicked.connect(self.auto_detect_requested.emit)
+        self.btn_auto_detect.clicked.connect(self._on_auto_detect_clicked)
         self.btn_auto_detect.setEnabled(False)
         header_layout.addWidget(self.btn_auto_detect)
 
@@ -402,6 +440,34 @@ class TimelineWidget(QWidget):
     def set_auto_detect_enabled(self, enabled: bool):
         """自動検出ボタンの有効状態を設定"""
         self.btn_auto_detect.setEnabled(enabled and self.duration > 0)
+
+    def set_detecting(self, detecting: bool):
+        """検出中の表示状態を切り替える（検出中はボタンが「中止」になる）"""
+        self._detecting = detecting
+        if detecting:
+            self.btn_auto_detect.setText("中止")
+            self.btn_auto_detect.setToolTip("シーン自動検出を中止します")
+            self.btn_auto_detect.setEnabled(True)
+        else:
+            self.btn_auto_detect.setText("自動検出")
+            self.btn_auto_detect.setToolTip("映像の変化から分割候補を自動追加します")
+            self.btn_auto_detect.setEnabled(self.duration > 0)
+        # 検出中は設定変更を受け付けない
+        self.threshold_spin.setEnabled(not detecting)
+        self.min_scene_spin.setEnabled(not detecting)
+
+    def _on_auto_detect_clicked(self):
+        if self._detecting:
+            self.auto_detect_cancel_requested.emit()
+        else:
+            self.auto_detect_requested.emit()
+
+    def get_detection_settings(self) -> SceneDetectionSettings:
+        """UIの値からシーン検出設定を構築"""
+        return SceneDetectionSettings(
+            adaptive_threshold=self.threshold_spin.value(),
+            min_scene_duration_seconds=self.min_scene_spin.value(),
+        )
     
     def set_playhead(self, position: float):
         """再生位置を更新"""

@@ -138,6 +138,21 @@ class Exporter:
         return f"{base}_{part_index + 1:03d}"
 
     @staticmethod
+    def _set_file_timestamp(path: Path, event_date: date):
+        """ファイルの更新日時を撮影日に合わせる（Finder等での日付順ソート用）"""
+        import os
+        import time
+
+        try:
+            timestamp = time.mktime(
+                (event_date.year, event_date.month, event_date.day, 0, 0, 0, 0, 0, -1)
+            )
+            os.utime(path, (timestamp, timestamp))
+        except (OSError, OverflowError, ValueError):
+            # タイムスタンプ設定の失敗は書き出し自体の成否に影響させない
+            pass
+
+    @staticmethod
     def _resolve_unique_path(path: Path) -> Path:
         """既存ファイルを上書きしないよう、空いているファイル名を返す"""
         if not path.exists():
@@ -232,11 +247,14 @@ class Exporter:
                     end_time=clip.end_time,
                     output_path=output_path,
                     use_copy=True,
+                    creation_date=clip.event_date,
                     progress_callback=progress_callback
                 )
 
                 if success:
                     result.succeeded += 1
+                    if clip.event_date is not None:
+                        self._set_file_timestamp(output_path, clip.event_date)
                 else:
                     notify(f"警告: クリップ {clip.index} の書き出しに失敗")
 

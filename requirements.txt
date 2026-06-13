@@ -1,2 +1,3 @@
 PySide6>=6.5.0
 scenedetect-headless>=0.7.0
+pyobjc-framework-Vision>=10.0; sys_platform == "darwin"

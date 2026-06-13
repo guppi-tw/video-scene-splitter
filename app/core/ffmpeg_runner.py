@@ -5,6 +5,7 @@ import logging
 import subprocess
 import sys
 import shutil
+from datetime import date
 from pathlib import Path
 from typing import Callable, Optional
 import platform
@@ -243,6 +244,55 @@ class FFmpegRunner:
             self._current_process = None
             return False
 
+    def extract_frame(
+        self,
+        video_path: Path,
+        time_sec: float,
+        output_path: Path,
+        video_filter: Optional[str] = None,
+    ) -> bool:
+        """指定時刻のフレームを1枚書き出す（OCR等の解析用、スケールしない）
+
+        Args:
+            video_filter: 任意のffmpeg -vf フィルタ（クロップ・拡大など）
+        """
+        if self._cancelled:
+            return False
+
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+
+        cmd = [
+            self.ffmpeg_path,
+            "-y",
+            "-ss", str(time_sec),
+            "-i", str(video_path),
+            "-vframes", "1",
+        ]
+        if video_filter:
+            cmd.extend(["-vf", video_filter])
+        cmd.append(str(output_path))
+
+        try:
+            self._current_process = subprocess.Popen(
+                cmd,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                **_popen_kwargs()
+            )
+            self._current_process.communicate(timeout=30)
+            self._current_process = None
+            return output_path.exists()
+        except subprocess.TimeoutExpired:
+            logger.warning(f"フレーム抽出がタイムアウト: {video_path} at {time_sec}s")
+            if self._current_process:
+                self._current_process.kill()
+            self._current_process = None
+            return False
+        except (FileNotFoundError, OSError) as e:
+            logger.error(f"フレーム抽出に失敗: {video_path}: {e}")
+            self._current_process = None
+            return False
+
     def extract_clip(
         self,
         video_path: Path,
@@ -250,29 +300,31 @@ class FFmpegRunner:
         end_time: float,
         output_path: Path,
         use_copy: bool = True,
+        creation_date: Optional[date] = None,
         progress_callback: Optional[Callable[[str], None]] = None
     ) -> bool:
         """
         動画からクリップを切り出し
-        
+
         Args:
             video_path: 入力動画パス
             start_time: 開始時刻（秒）
             end_time: 終了時刻（秒）
             output_path: 出力パス
             use_copy: コーデックコピーを使用するか
+            creation_date: コンテナの作成日時メタデータに書き込む日付
             progress_callback: 進捗コールバック
-            
+
         Returns:
             成功したかどうか
         """
         if self._cancelled:
             return False
-        
+
         output_path.parent.mkdir(parents=True, exist_ok=True)
-        
+
         duration = end_time - start_time
-        
+
         cmd = [
             self.ffmpeg_path,
             "-y",
@@ -280,12 +332,18 @@ class FFmpegRunner:
             "-i", str(video_path),
             "-t", str(duration),
         ]
-        
+
         if use_copy:
             cmd.extend(["-c", "copy"])
         else:
             cmd.extend(["-c:v", "libx264", "-c:a", "aac"])
-        
+
+        if creation_date is not None:
+            cmd.extend([
+                "-metadata",
+                f"creation_time={creation_date.isoformat()}T00:00:00",
+            ])
+
         cmd.append(str(output_path))
         
         if progress_callback:

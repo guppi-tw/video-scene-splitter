@@ -34,6 +34,7 @@ class ClipRow(QFrame):
     sensitive_changed = Signal(int, bool)  # scene_index, is_sensitive
     filename_changed = Signal(int, str)  # scene_index, filename
     preview_requested = Signal(float)  # start_time
+    selection_changed = Signal(int, bool)  # scene_index, selected
 
     def __init__(self, scene: Scene, job: VideoJob):
         super().__init__()
@@ -48,6 +49,14 @@ class ClipRow(QFrame):
         layout = QHBoxLayout(self)
         layout.setContentsMargins(5, 5, 5, 5)
         layout.setSpacing(8)
+
+        # 結合対象の選択チェックボックス
+        self.select_check = QCheckBox()
+        self.select_check.setToolTip(
+            "結合対象として選択\n連続するシーンを選んで「選択を結合」を押すと1つにまとまります"
+        )
+        self.select_check.stateChanged.connect(self._on_select_changed)
+        layout.addWidget(self.select_check)
 
         # サムネイル
         self.thumb_label = ClickableLabel()
@@ -139,6 +148,12 @@ class ClipRow(QFrame):
         self.scene.filename_override = text if text else None
         self.filename_changed.emit(self.scene.index, text)
 
+    def _on_select_changed(self, state):
+        self.selection_changed.emit(self.scene.index, state == Qt.Checked.value)
+
+    def is_selected(self) -> bool:
+        return self.select_check.isChecked()
+
     def _update_style(self):
         if self.scene.keep and self.scene.is_sensitive:
             self.setStyleSheet("ClipRow { background-color: #3a3320; }")
@@ -157,6 +172,9 @@ class ClipListWidget(QWidget):
 
     export_requested = Signal(object, object, bool)  # VideoJob, output_dir, auto_split
     clip_preview_requested = Signal(float)  # start_time
+    merge_requested = Signal(list)  # 結合対象のシーン番号リスト（昇順・連続）
+    date_detect_requested = Signal()
+    date_detect_cancel_requested = Signal()
 
     def __init__(self):
         super().__init__()
@@ -196,6 +214,31 @@ class ClipListWidget(QWidget):
         meta_layout.addWidget(self.btn_apply_all)
 
         layout.addLayout(meta_layout)
+
+        # 結合バー
+        merge_layout = QHBoxLayout()
+        self.merge_hint_label = QLabel("チェックで結合対象を選択")
+        self.merge_hint_label.setStyleSheet("color: #888; font-size: 10px;")
+        merge_layout.addWidget(self.merge_hint_label)
+        merge_layout.addStretch()
+
+        self._date_detecting = False
+        self.btn_date_detect = QPushButton("日付検出")
+        self.btn_date_detect.setToolTip(
+            "映像に焼き込まれた日付スタンプ（昔のビデオカメラの日付表示など）を\n"
+            "OCRで読み取り、各クリップの日付に設定します"
+        )
+        self.btn_date_detect.setEnabled(False)
+        self.btn_date_detect.clicked.connect(self._on_date_detect_clicked)
+        merge_layout.addWidget(self.btn_date_detect)
+
+        self.btn_merge = QPushButton("選択を結合")
+        self.btn_merge.setToolTip("選択した連続するシーンを1つのクリップにまとめます")
+        self.btn_merge.setEnabled(False)
+        self.btn_merge.clicked.connect(self._on_merge)
+        merge_layout.addWidget(self.btn_merge)
+
+        layout.addLayout(merge_layout)
 
         # スクロール可能なクリップリスト
         self.scroll_area = QScrollArea()
@@ -253,11 +296,14 @@ class ClipListWidget(QWidget):
         self.date_edit.blockSignals(False)
         self.date_check.blockSignals(False)
 
+        if not self._date_detecting:
+            self.btn_date_detect.setEnabled(True)
         self.refresh_clips()
 
     def clear(self):
         """クリップ一覧を空にする"""
         self.current_job = None
+        self.btn_date_detect.setEnabled(False)
         for row in self._clip_rows:
             row.setParent(None)
             row.deleteLater()
@@ -291,11 +337,13 @@ class ClipListWidget(QWidget):
             row = ClipRow(scene, self.current_job)
             row.preview_requested.connect(self.clip_preview_requested.emit)
             row.keep_changed.connect(self._on_individual_keep_changed)
+            row.selection_changed.connect(self._on_selection_changed)
             self._clip_rows.append(row)
             self.scroll_layout.addWidget(row)
 
         self.scroll_layout.addStretch()
         self._sync_keep_all_check()
+        self._update_merge_button()
 
     def update_thumbnail(self, scene_index: int, path: str):
         """特定クリップのサムネイルを更新"""
@@ -337,6 +385,68 @@ class ClipListWidget(QWidget):
     def _on_individual_keep_changed(self, scene_index: int, keep: bool):
         """個別クリップのKeep変更時に全体チェックボックスを同期"""
         self._sync_keep_all_check()
+
+    def _selected_scene_indexes(self) -> list[int]:
+        """選択中のシーン番号を昇順で返す"""
+        return sorted(
+            row.scene.index for row in self._clip_rows if row.is_selected()
+        )
+
+    def _on_selection_changed(self, scene_index: int, selected: bool):
+        """結合対象の選択が変更された"""
+        self._update_merge_button()
+
+    def _update_merge_button(self):
+        """選択状態に応じて結合ボタンとヒントを更新"""
+        selected = self._selected_scene_indexes()
+
+        if not selected:
+            self.merge_hint_label.setText("チェックで結合対象を選択")
+            self.btn_merge.setEnabled(False)
+            return
+
+        contiguous = selected[-1] - selected[0] + 1 == len(selected)
+        if len(selected) < 2:
+            self.merge_hint_label.setText("1件選択中（2件以上で結合できます）")
+            self.btn_merge.setEnabled(False)
+        elif not contiguous:
+            self.merge_hint_label.setText("連続するシーンのみ結合できます")
+            self.btn_merge.setEnabled(False)
+        else:
+            self.merge_hint_label.setText(
+                f"#{selected[0]}〜#{selected[-1]} の {len(selected)}件を結合"
+            )
+            self.btn_merge.setEnabled(True)
+
+    def _on_merge(self):
+        """選択シーンの結合をリクエスト"""
+        selected = self._selected_scene_indexes()
+        if len(selected) < 2:
+            return
+        if selected[-1] - selected[0] + 1 != len(selected):
+            return
+        self.merge_requested.emit(selected)
+
+    def _on_date_detect_clicked(self):
+        if self._date_detecting:
+            self.date_detect_cancel_requested.emit()
+        else:
+            self.date_detect_requested.emit()
+
+    def set_date_detecting(self, detecting: bool):
+        """日付検出中の表示状態を切り替える（検出中はボタンが「中止」になる）"""
+        self._date_detecting = detecting
+        if detecting:
+            self.btn_date_detect.setText("中止")
+            self.btn_date_detect.setToolTip("日付検出を中止します")
+            self.btn_date_detect.setEnabled(True)
+        else:
+            self.btn_date_detect.setText("日付検出")
+            self.btn_date_detect.setToolTip(
+                "映像に焼き込まれた日付スタンプ（昔のビデオカメラの日付表示など）を\n"
+                "OCRで読み取り、各クリップの日付に設定します"
+            )
+            self.btn_date_detect.setEnabled(self.current_job is not None)
 
     def _sync_keep_all_check(self):
         """全クリップのKeep状態に応じてチェックボックスを更新"""

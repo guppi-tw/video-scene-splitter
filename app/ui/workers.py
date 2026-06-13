@@ -6,8 +6,10 @@ from pathlib import Path
 
 from PySide6.QtCore import QObject, Signal
 
+from typing import Optional
+
 from app.core import VideoJob, JobStatus, FFmpegRunner, Exporter
-from app.core.scene_detector import detect_scene_boundaries
+from app.core.scene_detector import SceneDetectionSettings, detect_scene_boundaries
 
 logger = logging.getLogger(__name__)
 
@@ -62,13 +64,21 @@ class SceneDetectionWorker(QObject):
     """シーン自動検出ワーカー"""
 
     progress = Signal(str)
+    progress_percent = Signal(int)  # 検出進捗 (0-100)
     detection_complete = Signal(list)
     error = Signal(str)
+    finished = Signal()  # 完了・キャンセル・エラーのいずれでも最後に発火
 
-    def __init__(self, job: VideoJob, duration: float):
+    def __init__(
+        self,
+        job: VideoJob,
+        duration: float,
+        settings: Optional[SceneDetectionSettings] = None,
+    ):
         super().__init__()
         self.job = job
         self.duration = duration
+        self.settings = settings
         self._cancelled = False
 
     def cancel(self):
@@ -81,7 +91,9 @@ class SceneDetectionWorker(QObject):
             boundaries = detect_scene_boundaries(
                 self.job.source_path,
                 duration=self.duration,
+                settings=self.settings,
                 cancel_callback=lambda: self._cancelled,
+                progress_callback=self.progress_percent.emit,
             )
             if boundaries is None or self._cancelled:
                 self.progress.emit("シーン自動検出はキャンセルされました")
@@ -89,6 +101,52 @@ class SceneDetectionWorker(QObject):
             self.detection_complete.emit(boundaries)
         except Exception as e:
             self.error.emit(f"シーン自動検出エラー: {str(e)}")
+        finally:
+            self.finished.emit()
+
+
+class DateDetectionWorker(QObject):
+    """焼き込み日付検出ワーカー"""
+
+    progress = Signal(str)
+    progress_percent = Signal(int)  # 検出進捗 (0-100)
+    detection_complete = Signal(dict)  # {シーン番号: date}
+    error = Signal(str)
+    finished = Signal()  # 完了・キャンセル・エラーのいずれでも最後に発火
+
+    def __init__(self, job: VideoJob):
+        super().__init__()
+        self.job = job
+        self._cancelled = False
+
+    def cancel(self):
+        self._cancelled = True
+
+    def run(self):
+        """各シーンの焼き込み日付を検出"""
+        from app.core.date_detector import detect_scene_dates
+
+        try:
+            self.progress.emit("日付検出を開始しました")
+            scene_times = [
+                (s.index, s.start_time, s.end_time) for s in self.job.scenes
+            ]
+            results = detect_scene_dates(
+                self.job.source_path,
+                scene_times,
+                cancel_callback=lambda: self._cancelled,
+                progress_callback=lambda done, total: self.progress_percent.emit(
+                    int(done * 100 / total) if total else 100
+                ),
+            )
+            if self._cancelled:
+                self.progress.emit("日付検出はキャンセルされました")
+                return
+            self.detection_complete.emit(results)
+        except Exception as e:
+            self.error.emit(f"日付検出エラー: {str(e)}")
+        finally:
+            self.finished.emit()
 
 
 class ExportWorker(QObject):
