@@ -51,6 +51,7 @@ class MainWindow(QMainWindow):
         self.blank_detection_thread: QThread = None
         self.blank_detection_worker: BlankDetectionWorker = None
         self._propose_merge_after_blank = False
+        self._blank_manual = False
         self._blank_protected_times: List[float] = []
         self.batch_detection_thread: QThread = None
         self.batch_detection_worker: BatchSceneDetectionWorker = None
@@ -149,6 +150,10 @@ class MainWindow(QMainWindow):
         self.clip_list_widget.merge_requested.connect(self._on_merge_scenes_requested)
         self.clip_list_widget.short_merge_requested.connect(self._on_short_merge_requested)
 
+        # クリップリスト → つなぎ目検出
+        self.clip_list_widget.blank_detect_requested.connect(self._on_blank_detect_requested)
+        self.clip_list_widget.blank_detect_cancel_requested.connect(self._on_blank_detect_cancel)
+
         # クリップリスト → 日付検出
         self.clip_list_widget.date_detect_requested.connect(self._on_date_detect_requested)
         self.clip_list_widget.date_detect_cancel_requested.connect(self._on_date_detect_cancel)
@@ -198,6 +203,7 @@ class MainWindow(QMainWindow):
                 self.blank_detection_thread.wait()
                 self.blank_detection_thread = None
                 self.blank_detection_worker = None
+                self.clip_list_widget.set_blank_detecting(False)
 
         self.job_queue.remove_job(job_id)
         self.queue_widget.refresh()
@@ -516,18 +522,35 @@ class MainWindow(QMainWindow):
         #   つなぎ目(単色)検出 → 統合提案 → 日付検出
         # つなぎ目検出が終わってから統合提案・日付検出へ連鎖する
         self._propose_merge_after_blank = added_count > 0
-        self._start_blank_detection()
+        self._start_blank_detection(manual=False)
 
-    def _start_blank_detection(self):
-        """単色つなぎ目シーンの検出を開始（完了後に統合提案・日付検出へ連鎖）"""
+    def _on_blank_detect_requested(self):
+        """クリップ一覧から手動でつなぎ目検出を開始"""
+        self._start_blank_detection(manual=True)
+
+    def _on_blank_detect_cancel(self):
+        """つなぎ目検出の中止リクエスト"""
+        if self.blank_detection_worker:
+            self.blank_detection_worker.cancel()
+            self.log_widget.append_log("つなぎ目検出を中止しています...")
+
+    def _start_blank_detection(self, manual: bool):
+        """単色つなぎ目シーンの検出を開始
+
+        manual=False（自動）の場合のみ、完了後に統合提案・日付検出へ連鎖する。
+        """
         if not self.current_job or not self.current_job.scenes:
             return
 
         if self.blank_detection_thread and self.blank_detection_thread.isRunning():
+            if manual:
+                QMessageBox.warning(self, "警告", "つなぎ目検出を実行中です")
             return
 
+        self._blank_manual = manual
         self.log_widget.append_log("つなぎ目（単色）を検出中...")
         self.log_widget.set_status("つなぎ目検出中")
+        self.clip_list_widget.set_blank_detecting(True)
 
         self.blank_detection_thread = QThread()
         self.blank_detection_worker = BlankDetectionWorker(self.current_job)
@@ -595,7 +618,7 @@ class MainWindow(QMainWindow):
         self.log_widget.append_log(f"[ERROR] {message}")
 
     def _on_blank_detect_finished(self):
-        """つなぎ目検出スレッドを片付け、統合提案・日付検出へ連鎖する"""
+        """つなぎ目検出スレッドを片付ける。自動実行時のみ統合提案・日付検出へ連鎖。"""
         if self.sender() is not self.blank_detection_worker:
             return
         self.log_widget.hide_progress()
@@ -604,10 +627,15 @@ class MainWindow(QMainWindow):
             self.blank_detection_thread.wait()
             self.blank_detection_thread = None
             self.blank_detection_worker = None
+        self.clip_list_widget.set_blank_detecting(False)
         if self.current_job:
             self.log_widget.set_status(f"編集中: {self.current_job.filename}")
 
-        # つなぎ目処理が終わってから統合提案 → 日付検出
+        # 手動起動時は後続の連鎖をしない（つなぎ目除外だけで完了）
+        if self._blank_manual:
+            return
+
+        # 自動実行時のみ: つなぎ目処理 → 統合提案 → 日付検出
         if getattr(self, "_propose_merge_after_blank", False):
             self._propose_short_scene_merge()
         self._start_date_detection(auto=True)

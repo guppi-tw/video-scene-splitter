@@ -180,6 +180,8 @@ class ClipListWidget(QWidget):
     clip_preview_requested = Signal(float)  # start_time
     merge_requested = Signal(list)  # 結合対象のシーン番号リスト（昇順・連続）
     short_merge_requested = Signal()  # 短いシーンの結合提案を手動で出す
+    blank_detect_requested = Signal()
+    blank_detect_cancel_requested = Signal()
     date_detect_requested = Signal()
     date_detect_cancel_requested = Signal()
 
@@ -228,6 +230,13 @@ class ClipListWidget(QWidget):
         self.merge_hint_label.setStyleSheet("color: #888; font-size: 10px;")
         merge_layout.addWidget(self.merge_hint_label)
         merge_layout.addStretch()
+
+        self._blank_detecting = False
+        self.btn_blank_detect = QPushButton("つなぎ目検出")
+        self.btn_blank_detect.setToolTip("単色（青/黒/白）のつなぎ目を検出して除外提案を出します")
+        self.btn_blank_detect.setEnabled(False)
+        self.btn_blank_detect.clicked.connect(self._on_blank_detect_clicked)
+        merge_layout.addWidget(self.btn_blank_detect)
 
         self.btn_short_merge = QPushButton("短いシーンを結合")
         self.btn_short_merge.setToolTip("短いシーンをまとめる結合提案をもう一度出します")
@@ -311,6 +320,8 @@ class ClipListWidget(QWidget):
 
         if not self._date_detecting:
             self.btn_date_detect.setEnabled(True)
+        if not self._blank_detecting:
+            self.btn_blank_detect.setEnabled(True)
         self.btn_short_merge.setEnabled(True)
         self.refresh_clips()
 
@@ -318,6 +329,7 @@ class ClipListWidget(QWidget):
         """クリップ一覧を空にする"""
         self.current_job = None
         self.btn_date_detect.setEnabled(False)
+        self.btn_blank_detect.setEnabled(False)
         self.btn_short_merge.setEnabled(False)
         for row in self._clip_rows:
             row.setParent(None)
@@ -441,6 +453,26 @@ class ClipListWidget(QWidget):
         if selected[-1] - selected[0] + 1 != len(selected):
             return
         self.merge_requested.emit(selected)
+
+    def _on_blank_detect_clicked(self):
+        if self._blank_detecting:
+            self.blank_detect_cancel_requested.emit()
+        else:
+            self.blank_detect_requested.emit()
+
+    def set_blank_detecting(self, detecting: bool):
+        """つなぎ目検出中の表示状態を切り替える（検出中はボタンが「中止」になる）"""
+        self._blank_detecting = detecting
+        if detecting:
+            self.btn_blank_detect.setText("中止")
+            self.btn_blank_detect.setToolTip("つなぎ目検出を中止します")
+            self.btn_blank_detect.setEnabled(True)
+        else:
+            self.btn_blank_detect.setText("つなぎ目検出")
+            self.btn_blank_detect.setToolTip(
+                "単色（青/黒/白）のつなぎ目を検出して除外提案を出します"
+            )
+            self.btn_blank_detect.setEnabled(self.current_job is not None)
 
     def _on_date_detect_clicked(self):
         if self._date_detecting:
