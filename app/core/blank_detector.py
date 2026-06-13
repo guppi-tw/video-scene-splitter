@@ -71,60 +71,124 @@ def _sample_times(start: float, end: float) -> list[float]:
     return [start + duration * r for r in (0.5, 0.25, 0.75)]
 
 
-def detect_blank_scenes(
+def _scene_blank_segments(
+    runner: FFmpegRunner,
+    video_path: Path,
+    start: float,
+    end: float,
+    work_dir: Path,
+    std_threshold: float,
+    step: float = 0.5,
+    min_run: float = 1.0,
+) -> list[tuple[float, float, str]]:
+    """シーン [start, end] 内の単色区間（時間範囲）を返す。
+
+    シーン全体が一色ならその全体を返す。そうでなければ、先頭と末尾に
+    一色が min_run 秒以上続くリードイン／アウトを検出して返す。映像と
+    映像の間の青／黒画面は、こうしてシーンの端に現れることが多い。
+    """
+    from collections import Counter
+
+    duration = end - start
+    if duration <= 0:
+        return []
+
+    counter = 0
+
+    def label_at(t: float) -> Optional[str]:
+        nonlocal counter
+        counter += 1
+        frame_path = work_dir / f"blank_{int(round(start * 1000))}_{counter}.png"
+        if not runner.extract_frame(video_path, t, frame_path, _DOWNSCALE_FILTER):
+            return None
+        try:
+            stats = _frame_stats(frame_path)
+        finally:
+            try:
+                frame_path.unlink()
+            except OSError:
+                pass
+        return classify_blank(*stats, std_threshold=std_threshold) if stats else None
+
+    # シーン全体が一色か（25/50/75%地点で確認）
+    whole = [label_at(t) for t in _sample_times(start, end)]
+    if whole and all(label is not None for label in whole):
+        label = Counter(whole).most_common(1)[0][0]
+        return [(start, end, label)]
+
+    segments: list[tuple[float, float, str]] = []
+
+    # シーン端ちょうどのフレームはシーク直後で不安定なことがあるため、
+    # わずかに内側から走査を始める（青が0.3秒目から始まる等を取りこぼさない）。
+    offset = min(0.3, duration / 4)
+
+    # 先頭の一色ラン（最初に映像が現れるまで前進）
+    last_uniform = None
+    lead_label = None
+    t = start + offset
+    while t < end:
+        label = label_at(t)
+        if label is None:
+            break
+        last_uniform, lead_label = t, label
+        t += step
+    if last_uniform is not None and (last_uniform - start) + step >= min_run:
+        inner = min(end, last_uniform + step / 2)
+        segments.append((start, inner, lead_label))
+
+    # 末尾の一色ラン（末尾から後退）
+    last_uniform = None
+    trail_label = None
+    t = end - offset
+    while t > start:
+        label = label_at(t)
+        if label is None:
+            break
+        last_uniform, trail_label = t, label
+        t -= step
+    if last_uniform is not None and (end - last_uniform) + step >= min_run:
+        inner = max(start, last_uniform - step / 2)
+        # 先頭ランと重なる場合は追加しない
+        if not segments or inner > segments[0][1]:
+            segments.append((inner, end, trail_label))
+
+    return segments
+
+
+def detect_blank_segments(
     video_path: Path,
     scene_times: list[tuple[int, float, float]],
     cancel_callback: Optional[Callable[[], bool]] = None,
     progress_callback: Optional[Callable[[int, int], None]] = None,
     std_threshold: float = _DEFAULT_STD_THRESHOLD,
-) -> dict[int, str]:
-    """単色のつなぎ目シーンを検出する。
+) -> list[tuple[float, float, str]]:
+    """単色のつなぎ目区間（時間範囲）を検出する。
 
-    各シーンの複数フレームを調べ、サンプルした全フレームが一色のときだけ
-    つなぎ目と判定する（実映像の単調なカットを誤検出しないため）。
+    シーン全体が一色の場合だけでなく、シーン先頭／末尾の一色リードイン・
+    アウトも検出する。映像の冒頭に残る青画面などを切り出すために使う。
 
     Returns:
-        {シーン番号: ラベル（"青"/"黒"/"単色"）}（つなぎ目のみ）
+        [(開始秒, 終了秒, ラベル)] のリスト（時間順）
     """
-    from collections import Counter
-
     runner = FFmpegRunner()
-    results: dict[int, str] = {}
+    segments: list[tuple[float, float, str]] = []
 
     import tempfile
 
     with tempfile.TemporaryDirectory(prefix="vss-blankcheck-") as tmp:
         work_dir = Path(tmp)
 
-        for done, (index, start, end) in enumerate(scene_times):
+        for done, (_index, start, end) in enumerate(scene_times):
             if cancel_callback is not None and cancel_callback():
                 break
 
-            labels: list[Optional[str]] = []
-            for frame_id, time_sec in enumerate(_sample_times(start, end)):
-                if cancel_callback is not None and cancel_callback():
-                    break
-                frame_path = work_dir / f"blank_{index}_{frame_id}.png"
-                if not runner.extract_frame(
-                    video_path, time_sec, frame_path, _DOWNSCALE_FILTER
-                ):
-                    continue
-                try:
-                    stats = _frame_stats(frame_path)
-                finally:
-                    try:
-                        frame_path.unlink()
-                    except OSError:
-                        pass
-                if stats is None:
-                    continue
-                labels.append(classify_blank(*stats, std_threshold=std_threshold))
-
-            # サンプルした全フレームが一色のときのみ「つなぎ目」とする
-            if labels and all(label is not None for label in labels):
-                results[index] = Counter(labels).most_common(1)[0][0]
+            segments.extend(
+                _scene_blank_segments(
+                    runner, video_path, start, end, work_dir, std_threshold
+                )
+            )
 
             if progress_callback is not None:
                 progress_callback(done + 1, len(scene_times))
 
-    return results
+    return segments

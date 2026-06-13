@@ -154,7 +154,7 @@ class BlankDetectionWorker(QObject):
 
     progress = Signal(str)
     progress_percent = Signal(int)  # 検出進捗 (0-100)
-    detection_complete = Signal(dict)  # {シーン番号: ラベル}
+    detection_complete = Signal(list)  # [(開始秒, 終了秒, ラベル)]
     error = Signal(str)
     finished = Signal()
 
@@ -167,15 +167,15 @@ class BlankDetectionWorker(QObject):
         self._cancelled = True
 
     def run(self):
-        """各シーンが単色のつなぎ目かを検出"""
-        from app.core.blank_detector import detect_blank_scenes
+        """単色のつなぎ目区間を検出"""
+        from app.core.blank_detector import detect_blank_segments
 
         try:
             self.progress.emit("つなぎ目（単色）の検出を開始しました")
             scene_times = [
                 (s.index, s.start_time, s.end_time) for s in self.job.scenes
             ]
-            results = detect_blank_scenes(
+            segments = detect_blank_segments(
                 self.job.source_path,
                 scene_times,
                 cancel_callback=lambda: self._cancelled,
@@ -186,7 +186,7 @@ class BlankDetectionWorker(QObject):
             if self._cancelled:
                 self.progress.emit("つなぎ目検出はキャンセルされました")
                 return
-            self.detection_complete.emit(results)
+            self.detection_complete.emit(segments)
         except Exception as e:
             self.error.emit(f"つなぎ目検出エラー: {str(e)}")
         finally:

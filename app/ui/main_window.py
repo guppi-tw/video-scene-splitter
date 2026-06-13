@@ -469,39 +469,50 @@ class MainWindow(QMainWindow):
         self.log_widget.set_progress_bar(percent, 100)
         self.log_widget.set_detail(f"つなぎ目検出中: {percent}%")
 
-    def _on_blank_detect_complete(self, results: dict):
-        """つなぎ目検出完了。除外を提案する。"""
+    def _on_blank_detect_complete(self, segments: list):
+        """つなぎ目検出完了。単色区間に境界を入れて除外を提案する。"""
         self._blank_protected_times = []
-        if not self.current_job or not results:
+        if not self.current_job or not self.current_job.scenes or not segments:
             return
 
-        index_to_scene = {s.index: s for s in self.current_job.scenes}
-        blank_scenes = []
-        for index, label in sorted(results.items()):
-            scene = index_to_scene.get(index)
-            if scene is not None:
-                blank_scenes.append((index, label, scene.duration))
-
-        if not blank_scenes:
+        duration = self.current_job.scenes[-1].end_time
+        segs = [
+            (max(0.0, s), min(duration, e), label)
+            for s, e, label in segments
+            if min(duration, e) - max(0.0, s) > 0.05
+        ]
+        if not segs:
             return
 
-        dialog = BlankCutDialog(blank_scenes, self)
-        if dialog.exec() == BlankCutDialog.Accepted:
-            protected = []
-            for index, _label, _dur in blank_scenes:
-                scene = index_to_scene.get(index)
-                if scene is None:
-                    continue
-                scene.keep = False
-                # 除外シーンの境界を保護（統合で隣に飲み込ませない）
-                protected.append(scene.start_time)
-                if scene.end_time < self.current_job.scenes[-1].end_time:
-                    protected.append(scene.end_time)
-            self._blank_protected_times = protected
-            self.clip_list_widget.refresh_clips()
-            self.log_widget.append_log(
-                f"つなぎ目 {len(blank_scenes)} 個を書き出し対象から除外しました"
-            )
+        dialog = BlankCutDialog(segs, self)
+        if dialog.exec() != BlankCutDialog.Accepted:
+            return
+
+        # 単色区間の端に境界を追加して、区間だけを独立したシーンに切り出す
+        boundaries = set(self.timeline_widget.get_boundaries())
+        protected = []
+        for s, e, _label in segs:
+            for edge in (s, e):
+                edge = round(edge, 3)
+                if 0.0 < edge < duration:
+                    boundaries.add(edge)
+                    protected.append(edge)
+        self.timeline_widget.replace_boundaries(sorted(boundaries))
+        self._blank_protected_times = protected
+
+        # 単色区間内に入るシーンを除外（keepオフ）
+        dropped = 0
+        for scene in self.current_job.scenes:
+            mid = (scene.start_time + scene.end_time) / 2
+            if any(s - 1e-3 <= mid <= e + 1e-3 for s, e, _ in segs):
+                if scene.keep:
+                    scene.keep = False
+                    dropped += 1
+
+        self.clip_list_widget.refresh_clips()
+        self.log_widget.append_log(
+            f"単色のつなぎ目 {dropped} 区間を書き出し対象から除外しました"
+        )
 
     def _on_blank_detect_error(self, message: str):
         self.log_widget.append_log(f"[ERROR] {message}")

@@ -14,12 +14,12 @@ from app.core.time_format import format_seconds
 
 
 class BlankCutDialog(QDialog):
-    """単色つなぎ目シーンの除外を提案するダイアログ"""
+    """単色つなぎ目区間の除外を提案するダイアログ"""
 
-    def __init__(self, blank_scenes: List[Tuple[int, str, float]], parent=None):
-        """blank_scenes: (シーン番号, ラベル, 長さ秒) のリスト"""
+    def __init__(self, segments: List[Tuple[float, float, str]], parent=None):
+        """segments: (開始秒, 終了秒, ラベル) のリスト"""
         super().__init__(parent)
-        self._blank_scenes = blank_scenes
+        self._segments = segments
 
         self.setWindowTitle("つなぎ目の除外")
         self.setModal(True)
@@ -28,13 +28,13 @@ class BlankCutDialog(QDialog):
         layout = QVBoxLayout(self)
         layout.setSpacing(10)
 
-        total_seconds = sum(d for _, _, d in blank_scenes)
-        labels = sorted({label for _, label, _ in blank_scenes})
+        total_seconds = sum(e - s for s, e, _ in segments)
+        labels = sorted({label for _, _, label in segments})
         kinds = "・".join(labels) if labels else "単色"
 
         intro = QLabel(
-            f"映像のつなぎ目とみられる{kinds}一色のシーンを "
-            f"{len(blank_scenes)} 個（合計 {format_seconds(total_seconds)}）"
+            f"映像のつなぎ目とみられる{kinds}一色の区間を "
+            f"{len(segments)} 個（合計 {format_seconds(total_seconds)}）"
             "検出しました。\n書き出し対象から除外しますか？"
         )
         intro.setWordWrap(True)
@@ -42,10 +42,10 @@ class BlankCutDialog(QDialog):
 
         detail = QLabel(
             "、".join(
-                f"#{index}（{label}・{format_seconds(d)}）"
-                for index, label, d in blank_scenes[:12]
+                f"{format_seconds(s)}〜{format_seconds(e)}（{label}）"
+                for s, e, label in segments[:10]
             )
-            + ("…" if len(blank_scenes) > 12 else "")
+            + ("…" if len(segments) > 10 else "")
         )
         detail.setWordWrap(True)
         detail.setStyleSheet("color: #aaa; font-size: 11px;")
