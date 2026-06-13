@@ -126,11 +126,41 @@ def _ocr_image_lines(image_path: Path) -> list[str]:
     if not ok:
         return []
 
-    lines = []
+    # 古いカメラの日付は「1997. 1. 1」のように年・月・日が横に離れて配置され、
+    # Vision はそれぞれを別の観測として返す。バウンディングボックスのY座標で
+    # 同じ行にまとめ、左から右へ連結して日付の行を復元する。
+    items = []
     for observation in request.results() or []:
-        # 上位2候補まで見る（VHSの読みづらい字は2番目が正しいことがある）
-        for candidate in observation.topCandidates_(2) or []:
-            lines.append(str(candidate.string()))
+        candidates = observation.topCandidates_(1)
+        if not candidates:
+            continue
+        text = str(candidates[0].string())
+        box = observation.boundingBox()
+        y_center = box.origin.y + box.size.height / 2.0
+        items.append((y_center, box.origin.x, box.size.height, text))
+
+    if not items:
+        return []
+
+    # Y座標は下が0・上が1（左下原点）。上の行から順に並べる。
+    items.sort(key=lambda it: -it[0])
+
+    rows: list[list[tuple]] = [[items[0]]]
+    for item in items[1:]:
+        ref_y = sum(c[0] for c in rows[-1]) / len(rows[-1])
+        ref_h = max(c[2] for c in rows[-1])
+        if abs(item[0] - ref_y) <= max(0.02, ref_h * 0.6):
+            rows[-1].append(item)
+        else:
+            rows.append([item])
+
+    lines = []
+    for row in rows:
+        row.sort(key=lambda it: it[1])  # 左から右
+        lines.append(" ".join(c[3] for c in row))
+    # 行の復元に失敗した場合の保険として全テキストの連結も加える
+    if len(lines) > 1:
+        lines.append(" ".join(lines))
     return lines
 
 

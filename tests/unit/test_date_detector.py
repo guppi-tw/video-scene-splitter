@@ -17,6 +17,16 @@ def test_parse_vhs_stamp_with_space_before_month():
     assert parse_date_from_text("1997. 7.27") == date(1997, 7, 27)
 
 
+def test_parse_single_digit_month_and_day():
+    # 時計リセット時のデフォルト "1997. 1. 1"（行復元後の連結文字列）
+    assert parse_date_from_text("1997. 1. 1") == date(1997, 1, 1)
+
+
+def test_parse_date_line_with_trailing_time():
+    # 行復元で日付行に時刻が続いても日付部分を取る
+    assert parse_date_from_text("1997. 1. 1 AM 9:59") == date(1997, 1, 1)
+
+
 def test_parse_ymd_with_space_only_separators():
     # OCRが細い句読点を落として空白だけになるケース
     assert parse_date_from_text("1997 7 27") == date(1997, 7, 27)
