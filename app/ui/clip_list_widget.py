@@ -77,12 +77,18 @@ class ClipRow(QFrame):
         info_layout = QVBoxLayout()
         info_layout.setSpacing(2)
 
-        # クリップ番号 + 時間範囲
+        # クリップ番号 + 時間範囲 + 判定された日付
+        effective_date = self.scene.event_date or self.job.default_event_date
+        date_text = (
+            f"  📅 {effective_date.strftime('%Y-%m-%d')}"
+            if effective_date else "  📅 日付なし"
+        )
         time_text = (
             f"#{self.scene.index}  "
             f"{self._format_time(self.scene.start_time)} - "
             f"{self._format_time(self.scene.end_time)}  "
             f"({self._format_time(self.scene.duration)})"
+            f"{date_text}"
         )
         self.time_label = QLabel(time_text)
         self.time_label.setStyleSheet("font-size: 11px; color: #ccc;")
