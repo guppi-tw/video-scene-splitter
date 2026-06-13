@@ -62,24 +62,6 @@ class PreviewWidget(QWidget):
         self.btn_stop.setEnabled(False)
         controls_layout.addWidget(self.btn_stop)
 
-        # 5秒戻る
-        self.btn_back = QPushButton()
-        self.btn_back.setIcon(self.style().standardIcon(QStyle.SP_MediaSeekBackward))
-        self.btn_back.setFixedSize(32, 32)
-        self.btn_back.clicked.connect(lambda: self._seek_relative(-5000))
-        self.btn_back.setEnabled(False)
-        self.btn_back.setToolTip("5秒戻る")
-        controls_layout.addWidget(self.btn_back)
-
-        # 5秒進む
-        self.btn_forward = QPushButton()
-        self.btn_forward.setIcon(self.style().standardIcon(QStyle.SP_MediaSeekForward))
-        self.btn_forward.setFixedSize(32, 32)
-        self.btn_forward.clicked.connect(lambda: self._seek_relative(5000))
-        self.btn_forward.setEnabled(False)
-        self.btn_forward.setToolTip("5秒進む")
-        controls_layout.addWidget(self.btn_forward)
-
         controls_layout.addSpacing(10)
 
         # ここで分割ボタン
@@ -115,35 +97,39 @@ class PreviewWidget(QWidget):
 
         layout.addLayout(controls_layout)
 
-        # コントロールバー（2行目: コマ送り + 再生速度）
+        # コントロールバー（2行目: 送り（幅切替）+ 再生速度）
         controls2_layout = QHBoxLayout()
         controls2_layout.setSpacing(5)
 
-        # コマ戻しボタン
-        self.btn_step_back = QPushButton("< 戻す")
-        self.btn_step_back.setFixedHeight(24)
+        # 戻すボタン（移動幅はセレクタで切替）
+        self.btn_step_back = QPushButton()
+        self.btn_step_back.setIcon(self.style().standardIcon(QStyle.SP_MediaSeekBackward))
+        self.btn_step_back.setFixedSize(32, 24)
         self.btn_step_back.clicked.connect(self._on_step_back)
         self.btn_step_back.setEnabled(False)
+        self.btn_step_back.setToolTip("選択した幅だけ戻る（←）")
         controls2_layout.addWidget(self.btn_step_back)
 
-        # ステップ幅セレクタ
+        # 移動幅セレクタ（コマ送り〜数秒ジャンプまで兼用）
         self.step_combo = QComboBox()
         self.step_combo.setFixedHeight(24)
-        self._step_values = [0.1, 0.25, 0.5, 1.0, 2.0, 5.0]
+        self._step_values = [0.1, 0.25, 0.5, 1.0, 2.0, 5.0, 10.0]
         for v in self._step_values:
             if v >= 1.0:
                 self.step_combo.addItem(f"{v:.0f}秒")
             else:
                 self.step_combo.addItem(f"{v:.2f}秒")
         self.step_combo.setCurrentIndex(2)  # 0.5秒デフォルト
-        self.step_combo.setToolTip("コマ送りの幅")
+        self.step_combo.setToolTip("戻る／進むの移動幅")
         controls2_layout.addWidget(self.step_combo)
 
-        # コマ送りボタン
-        self.btn_step_forward = QPushButton("進む >")
-        self.btn_step_forward.setFixedHeight(24)
+        # 進むボタン（移動幅はセレクタで切替）
+        self.btn_step_forward = QPushButton()
+        self.btn_step_forward.setIcon(self.style().standardIcon(QStyle.SP_MediaSeekForward))
+        self.btn_step_forward.setFixedSize(32, 24)
         self.btn_step_forward.clicked.connect(self._on_step_forward)
         self.btn_step_forward.setEnabled(False)
+        self.btn_step_forward.setToolTip("選択した幅だけ進む（→）")
         controls2_layout.addWidget(self.btn_step_forward)
 
         controls2_layout.addSpacing(20)
@@ -195,8 +181,6 @@ class PreviewWidget(QWidget):
         # コントロールを有効化
         self.btn_play.setEnabled(True)
         self.btn_stop.setEnabled(True)
-        self.btn_back.setEnabled(True)
-        self.btn_forward.setEnabled(True)
         self.btn_split.setEnabled(True)
         self.btn_step_back.setEnabled(True)
         self.btn_step_forward.setEnabled(True)
@@ -341,7 +325,7 @@ class PreviewWidget(QWidget):
         self._duration_ms = 0
         self._update_time_label(0)
         for btn in (
-            self.btn_play, self.btn_stop, self.btn_back, self.btn_forward,
+            self.btn_play, self.btn_stop,
             self.btn_split, self.btn_step_back, self.btn_step_forward,
         ):
             btn.setEnabled(False)
