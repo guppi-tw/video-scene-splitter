@@ -3,6 +3,7 @@ main_window.py の自動後処理パイプライン順序テスト
 """
 from types import SimpleNamespace
 
+from app.core.jobs import JobStatus, Scene, VideoJob
 from app.ui.main_window import MainWindow
 
 
@@ -68,3 +69,27 @@ def test_manual_blank_finished_only_shows_blank_dialog():
 
     assert calls == [("blank", segments)]
     assert window._pending_blank_segments is None
+
+
+def test_queue_clip_preview_does_not_start_post_process_pipeline(tmp_path):
+    """子クリップ選択のプレビューでは、自動後処理モーダルを起動しない"""
+    video_path = tmp_path / "video.mp4"
+    video_path.touch()
+    job = VideoJob(id=1, source_path=video_path, status=JobStatus.REVIEW)
+    job.scenes = [Scene(index=1, start_time=0.0, end_time=10.0)]
+    job.needs_post_process = True
+    calls = []
+
+    window = SimpleNamespace(
+        current_job=None,
+        _on_job_selected=lambda selected: calls.append(("selected", selected.id)),
+        _on_open_video=lambda _job: calls.append(("opened", _job.id)),
+        preview_widget=SimpleNamespace(
+            seek_to=lambda seconds: calls.append(("seek", seconds))
+        ),
+    )
+
+    MainWindow._on_queue_clip_preview(window, job, 4.5)
+
+    assert calls == [("selected", job.id), ("seek", 4.5)]
+    assert job.needs_post_process is True

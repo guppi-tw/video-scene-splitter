@@ -222,9 +222,13 @@ class MainWindow(QMainWindow):
             self.log_widget.set_status("待機中")
 
     def _on_queue_clip_preview(self, job: VideoJob, start_time: float):
-        """キューのツリーでクリップを選んだとき、その動画を開いて頭出しする"""
+        """キューのツリーでクリップを選んだとき、その動画を表示して頭出しする。
+
+        これはプレビュー操作なので、needs_post_process の自動後処理モーダルは
+        起動しない。後処理は動画行のダブルクリックなど、明示的に開いた時だけ行う。
+        """
         if self.current_job is not job:
-            self._on_open_video(job)
+            self._on_job_selected(job)
         self.preview_widget.seek_to(start_time)
 
     def _on_detect_all_requested(self):

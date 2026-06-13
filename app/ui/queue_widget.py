@@ -248,39 +248,43 @@ class QueueWidget(QWidget):
         selected_item = self._selected_job_item()
         selected_id = selected_item.data(0, _ROLE_JOB_ID) if selected_item else None
 
-        self.tree.clear()
+        was_blocked = self.tree.blockSignals(True)
+        try:
+            self.tree.clear()
 
-        for job in self.job_queue.get_all_jobs():
-            scene_count = len(job.scenes)
-            status_text, bg_color, fg_color = job_status_badge(job)
+            for job in self.job_queue.get_all_jobs():
+                scene_count = len(job.scenes)
+                status_text, bg_color, fg_color = job_status_badge(job)
 
-            top = QTreeWidgetItem([job.filename, status_text])
-            top.setData(0, _ROLE_JOB_ID, job.id)
-            top.setBackground(1, QBrush(QColor(bg_color)))
-            top.setForeground(1, QBrush(QColor(fg_color)))
-            top.setToolTip(1, next_open_action_text(job))
-            self.tree.addTopLevelItem(top)
+                top = QTreeWidgetItem([job.filename, status_text])
+                top.setData(0, _ROLE_JOB_ID, job.id)
+                top.setBackground(1, QBrush(QColor(bg_color)))
+                top.setForeground(1, QBrush(QColor(fg_color)))
+                top.setToolTip(1, next_open_action_text(job))
+                self.tree.addTopLevelItem(top)
 
-            # 分割クリップを子として追加
-            for scene in job.scenes:
-                label = (
-                    f"#{scene.index}  {format_seconds(scene.start_time)}"
-                    f"–{format_seconds(scene.end_time)}"
-                )
-                state = "keep" if scene.keep else "除外"
-                child = QTreeWidgetItem([label, state])
-                child.setData(0, _ROLE_CLIP_TIME, scene.start_time)
-                if not scene.keep:
-                    child.setForeground(0, QBrush(QColor("#888")))
-                top.addChild(child)
+                # 分割クリップを子として追加
+                for scene in job.scenes:
+                    label = (
+                        f"#{scene.index}  {format_seconds(scene.start_time)}"
+                        f"–{format_seconds(scene.end_time)}"
+                    )
+                    state = "keep" if scene.keep else "除外"
+                    child = QTreeWidgetItem([label, state])
+                    child.setData(0, _ROLE_CLIP_TIME, scene.start_time)
+                    if not scene.keep:
+                        child.setForeground(0, QBrush(QColor("#888")))
+                    top.addChild(child)
 
-            # 展開状態を復元（新規検出で子ができた動画は開く）
-            if job.id in expanded or (scene_count > 0 and job.id not in expanded
-                                      and job.id == selected_id):
-                top.setExpanded(True)
+                # 展開状態を復元（新規検出で子ができた動画は開く）
+                if job.id in expanded or (scene_count > 0 and job.id not in expanded
+                                          and job.id == selected_id):
+                    top.setExpanded(True)
 
-            if job.id == selected_id:
-                self.tree.setCurrentItem(top)
+                if job.id == selected_id:
+                    self.tree.setCurrentItem(top)
+        finally:
+            self.tree.blockSignals(was_blocked)
 
         self._update_next_action(self.get_selected_job())
 

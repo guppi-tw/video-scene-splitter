@@ -56,3 +56,29 @@ def test_queue_selection_updates_next_action_label(tmp_path):
     assert widget.tree.topLevelItem(0).text(1) == "後処理待ち / 1本"
 
     widget.close()
+
+
+def test_queue_refresh_does_not_emit_selection_side_effects(tmp_path):
+    _app()
+    video_path = tmp_path / "video.mp4"
+    video_path.touch()
+    queue = JobQueue()
+    job = queue.add_file(video_path)
+    job.status = JobStatus.REVIEW
+    job.scenes = [Scene(index=1, start_time=0.0, end_time=10.0)]
+    job.needs_post_process = True
+
+    widget = QueueWidget(queue)
+    emitted = []
+    widget.job_selected.connect(lambda selected: emitted.append(selected.id))
+
+    widget.refresh()
+    widget.select_job(job.id)
+    assert emitted == [job.id]
+
+    emitted.clear()
+    widget.refresh()
+
+    assert emitted == []
+
+    widget.close()
