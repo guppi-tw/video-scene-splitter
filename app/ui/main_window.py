@@ -300,6 +300,7 @@ class MainWindow(QMainWindow):
         self.log_widget.append_log(f"[ERROR] {message}")
         if self.batch_progress_dialog:
             self.batch_progress_dialog.add_result(f"[ERROR] {message}")
+        self.queue_widget.refresh()
 
     def _on_batch_detect_cancel(self):
         self._batch_cancel_requested = True
@@ -312,7 +313,7 @@ class MainWindow(QMainWindow):
             return
         self.log_widget.hide_progress()
         if self._batch_error:
-            finished_message = "一括検出エラー"
+            finished_message = "一括検出完了（一部エラー）"
         elif self._batch_cancel_requested:
             finished_message = "一括検出をキャンセルしました"
         else:

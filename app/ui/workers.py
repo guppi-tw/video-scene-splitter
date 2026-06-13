@@ -127,16 +127,20 @@ class BatchSceneDetectionWorker(QObject):
         """各動画を順番にシーン検出し、結果を各ジョブに設定する"""
         runner = FFmpegRunner()
         total = len(self.jobs)
-        try:
-            for i, job in enumerate(self.jobs):
-                if self._cancelled:
-                    break
+        for i, job in enumerate(self.jobs):
+            if self._cancelled:
+                break
 
-                self.progress.emit(f"({i + 1}/{total}) 検出中: {job.filename}")
+            self.progress.emit(f"({i + 1}/{total}) 検出中: {job.filename}")
 
+            try:
                 duration = runner.get_video_duration(job.source_path)
                 if duration is None or duration <= 0:
-                    self.progress.emit(f"スキップ（長さ取得失敗）: {job.filename}")
+                    message = "動画の長さを取得できませんでした"
+                    job.status = JobStatus.ERROR
+                    job.error_message = message
+                    self.error.emit(f"{job.filename}: {message}")
+                    self.progress_percent.emit(int((i + 1) / total * 100) if total else 100)
                     continue
 
                 def on_percent(pct, _i=i):
@@ -159,10 +163,15 @@ class BatchSceneDetectionWorker(QObject):
                 job.needs_post_process = True
                 self.video_done.emit(job.id, len(job.scenes))
                 self.progress_percent.emit(int((i + 1) / total * 100) if total else 100)
-        except Exception as e:
-            self.error.emit(f"一括検出エラー: {str(e)}")
-        finally:
-            self.finished.emit()
+            except Exception as e:
+                logger.exception("一括検出中に動画単位のエラー: %s", job.source_path)
+                job.status = JobStatus.ERROR
+                job.error_message = str(e)
+                self.error.emit(f"{job.filename}: {e}")
+                self.progress_percent.emit(int((i + 1) / total * 100) if total else 100)
+                continue
+
+        self.finished.emit()
 
 
 class DateDetectionWorker(QObject):
