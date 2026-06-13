@@ -23,10 +23,12 @@ class MergeProposalDialog(QDialog):
         duration: float,
         initial_min_seconds: float = 3.0,
         parent=None,
+        protected_times: List[float] = (),
     ):
         super().__init__(parent)
         self._boundaries = list(boundaries)
         self._duration = duration
+        self._protected_times = list(protected_times)
 
         self.setWindowTitle("短いシーンの結合")
         self.setModal(True)
@@ -82,7 +84,8 @@ class MergeProposalDialog(QDialog):
     def merged_boundaries(self) -> List[float]:
         """現在の秒数設定で結合した境界リストを返す"""
         return absorb_short_scenes(
-            self._boundaries, self._duration, self.min_seconds_spin.value()
+            self._boundaries, self._duration, self.min_seconds_spin.value(),
+            self._protected_times,
         )
 
     def merge_count(self) -> int:

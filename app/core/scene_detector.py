@@ -55,36 +55,65 @@ def absorb_short_scenes(
     boundaries: Iterable[float],
     duration: float,
     min_scene_duration: float,
+    protected_times: Iterable[float] = (),
 ) -> list[float]:
     """min_scene_duration秒未満のシーンを隣のシーンに統合した境界リストを返す。
 
     最も短いシーンから順に、隣接するシーンのうち短い方へ統合していく。
     細切れシーンが連続している場合も、まずそれら同士がまとまるため
     長いシーンが不必要に侵食されない。
+
+    protected_times に渡した境界は削除しない。除外済みの単色つなぎ目シーンの
+    境界を保護することで、つなぎ目を隣のシーンに飲み込んで再混入させない。
     """
     bounds = _dedupe_sorted_boundaries(boundaries)
     if min_scene_duration <= 0 or duration <= 0:
         return bounds
 
+    protected = {round(float(t), 3) for t in protected_times}
+
     # 境界 + 終端でシーン区間を表す
     edges = [b for b in bounds if b < duration] + [duration]
 
+    def _is_protected(edge_index: int) -> bool:
+        # edges[-1] は終端（duration）なので保護対象に含めない
+        if edge_index <= 0 or edge_index >= len(edges) - 1:
+            return False
+        return round(edges[edge_index], 3) in protected
+
     while len(edges) > 2:
         durations = [edges[i + 1] - edges[i] for i in range(len(edges) - 1)]
-        shortest = min(range(len(durations)), key=lambda i: durations[i])
-        if durations[shortest] >= min_scene_duration:
+        # 短い順に、削除すべき境界が保護されていない最初のシーンを統合する
+        order = sorted(range(len(durations)), key=lambda i: durations[i])
+        progressed = False
+        for shortest in order:
+            if durations[shortest] >= min_scene_duration:
+                break
+
+            if shortest == 0:
+                remove_index = 1
+            elif shortest == len(durations) - 1:
+                remove_index = shortest
+            elif durations[shortest - 1] <= durations[shortest + 1]:
+                remove_index = shortest
+            else:
+                remove_index = shortest + 1
+
+            # 好みの統合方向が保護されている中間シーンは逆方向も試す
+            if 0 < shortest < len(durations) - 1 and _is_protected(remove_index):
+                alt = shortest + 1 if remove_index == shortest else shortest
+                if not _is_protected(alt):
+                    remove_index = alt
+
+            if _is_protected(remove_index):
+                continue
+
+            del edges[remove_index]
+            progressed = True
             break
 
-        if shortest == 0:
-            # 先頭シーンは次のシーンと統合
-            del edges[1]
-        elif shortest == len(durations) - 1:
-            # 末尾シーンは前のシーンと統合
-            del edges[shortest]
-        elif durations[shortest - 1] <= durations[shortest + 1]:
-            del edges[shortest]
-        else:
-            del edges[shortest + 1]
+        if not progressed:
+            break
 
     return _dedupe_sorted_boundaries(edges[:-1])
 

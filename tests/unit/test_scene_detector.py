@@ -185,3 +185,30 @@ def test_detect_scene_boundaries_aborts_on_cancel(monkeypatch):
     # キャンセルでNoneが返り、全フレームを処理せず早期に打ち切られる
     assert boundaries is None
     assert calls["count"] < 1000
+
+
+def test_absorb_short_scenes_respects_protected_boundaries():
+    # 12-13.5 が短いが、その境界(12.0, 13.5)を保護したので統合されない
+    boundaries = [0.0, 10.0, 12.0, 13.5, 30.0]
+
+    result = absorb_short_scenes(
+        boundaries, duration=60.0, min_scene_duration=3.0,
+        protected_times=[12.0, 13.5],
+    )
+
+    assert 12.0 in result
+    assert 13.5 in result
+
+
+def test_absorb_short_scenes_protected_does_not_pull_neighbours_across():
+    # 短い保護シーン(10-11)を挟んでも、隣の短い破片同士のみが処理され、
+    # 保護境界(10.0, 11.0)は残る
+    boundaries = [0.0, 10.0, 11.0, 12.0, 30.0]
+
+    result = absorb_short_scenes(
+        boundaries, duration=60.0, min_scene_duration=3.0,
+        protected_times=[10.0, 11.0],
+    )
+
+    assert 10.0 in result
+    assert 11.0 in result

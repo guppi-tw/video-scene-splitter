@@ -149,6 +149,50 @@ class DateDetectionWorker(QObject):
             self.finished.emit()
 
 
+class BlankDetectionWorker(QObject):
+    """単色（青/黒一色）つなぎ目シーン検出ワーカー"""
+
+    progress = Signal(str)
+    progress_percent = Signal(int)  # 検出進捗 (0-100)
+    detection_complete = Signal(dict)  # {シーン番号: ラベル}
+    error = Signal(str)
+    finished = Signal()
+
+    def __init__(self, job: VideoJob):
+        super().__init__()
+        self.job = job
+        self._cancelled = False
+
+    def cancel(self):
+        self._cancelled = True
+
+    def run(self):
+        """各シーンが単色のつなぎ目かを検出"""
+        from app.core.blank_detector import detect_blank_scenes
+
+        try:
+            self.progress.emit("つなぎ目（単色）の検出を開始しました")
+            scene_times = [
+                (s.index, s.start_time, s.end_time) for s in self.job.scenes
+            ]
+            results = detect_blank_scenes(
+                self.job.source_path,
+                scene_times,
+                cancel_callback=lambda: self._cancelled,
+                progress_callback=lambda done, total: self.progress_percent.emit(
+                    int(done * 100 / total) if total else 100
+                ),
+            )
+            if self._cancelled:
+                self.progress.emit("つなぎ目検出はキャンセルされました")
+                return
+            self.detection_complete.emit(results)
+        except Exception as e:
+            self.error.emit(f"つなぎ目検出エラー: {str(e)}")
+        finally:
+            self.finished.emit()
+
+
 class ExportWorker(QObject):
     """書き出しワーカー"""
 

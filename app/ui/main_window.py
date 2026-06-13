@@ -19,10 +19,12 @@ from app.ui.queue_widget import QueueWidget
 from app.ui.clip_list_widget import ClipListWidget
 from app.ui.log_widget import LogWidget
 from app.ui.merge_dialog import MergeProposalDialog
+from app.ui.blank_dialog import BlankCutDialog
 from app.ui.preview_widget import PreviewWidget
 from app.ui.timeline_widget import TimelineWidget
 from app.ui.workers import (
-    ThumbnailWorker, ExportWorker, SceneDetectionWorker, DateDetectionWorker
+    ThumbnailWorker, ExportWorker, SceneDetectionWorker,
+    DateDetectionWorker, BlankDetectionWorker,
 )
 from app.core.scene_detector import absorb_short_scenes, merge_boundaries
 
@@ -46,6 +48,10 @@ class MainWindow(QMainWindow):
         self.date_detection_thread: QThread = None
         self.date_detection_worker: DateDetectionWorker = None
         self._date_detect_auto = False
+        self.blank_detection_thread: QThread = None
+        self.blank_detection_worker: BlankDetectionWorker = None
+        self._propose_merge_after_blank = False
+        self._blank_protected_times: List[float] = []
 
         # Undo履歴（境界のスナップショット）
         # 境界が変わるたびに変更前の状態を積む（分割・ドラッグ・追加・削除・
@@ -180,6 +186,13 @@ class MainWindow(QMainWindow):
                 self.date_detection_thread = None
                 self.date_detection_worker = None
                 self.clip_list_widget.set_date_detecting(False)
+            if self.blank_detection_thread and self.blank_detection_thread.isRunning():
+                if self.blank_detection_worker:
+                    self.blank_detection_worker.cancel()
+                self.blank_detection_thread.quit()
+                self.blank_detection_thread.wait()
+                self.blank_detection_thread = None
+                self.blank_detection_worker = None
 
         self.job_queue.remove_job(job_id)
         self.queue_widget.refresh()
@@ -422,10 +435,93 @@ class MainWindow(QMainWindow):
         self.log_widget.set_status(f"編集中: {self.current_job.filename}")
         self._finish_scene_detection()
 
-        if added_count > 0:
-            self._propose_short_scene_merge()
+        # 検出後の自動パイプライン:
+        #   つなぎ目(単色)検出 → 統合提案 → 日付検出
+        # つなぎ目検出が終わってから統合提案・日付検出へ連鎖する
+        self._propose_merge_after_blank = added_count > 0
+        self._start_blank_detection()
 
-        # シーンが確定したら焼き込み日付の検出を自動実行
+    def _start_blank_detection(self):
+        """単色つなぎ目シーンの検出を開始（完了後に統合提案・日付検出へ連鎖）"""
+        if not self.current_job or not self.current_job.scenes:
+            return
+
+        if self.blank_detection_thread and self.blank_detection_thread.isRunning():
+            return
+
+        self.log_widget.append_log("つなぎ目（単色）を検出中...")
+        self.log_widget.set_status("つなぎ目検出中")
+
+        self.blank_detection_thread = QThread()
+        self.blank_detection_worker = BlankDetectionWorker(self.current_job)
+        self.blank_detection_worker.moveToThread(self.blank_detection_thread)
+
+        self.blank_detection_thread.started.connect(self.blank_detection_worker.run)
+        self.blank_detection_worker.progress.connect(self._on_progress)
+        self.blank_detection_worker.progress_percent.connect(self._on_blank_detect_percent)
+        self.blank_detection_worker.detection_complete.connect(self._on_blank_detect_complete)
+        self.blank_detection_worker.error.connect(self._on_blank_detect_error)
+        self.blank_detection_worker.finished.connect(self._on_blank_detect_finished)
+
+        self.blank_detection_thread.start()
+
+    def _on_blank_detect_percent(self, percent: int):
+        self.log_widget.set_progress_bar(percent, 100)
+        self.log_widget.set_detail(f"つなぎ目検出中: {percent}%")
+
+    def _on_blank_detect_complete(self, results: dict):
+        """つなぎ目検出完了。除外を提案する。"""
+        self._blank_protected_times = []
+        if not self.current_job or not results:
+            return
+
+        index_to_scene = {s.index: s for s in self.current_job.scenes}
+        blank_scenes = []
+        for index, label in sorted(results.items()):
+            scene = index_to_scene.get(index)
+            if scene is not None:
+                blank_scenes.append((index, label, scene.duration))
+
+        if not blank_scenes:
+            return
+
+        dialog = BlankCutDialog(blank_scenes, self)
+        if dialog.exec() == BlankCutDialog.Accepted:
+            protected = []
+            for index, _label, _dur in blank_scenes:
+                scene = index_to_scene.get(index)
+                if scene is None:
+                    continue
+                scene.keep = False
+                # 除外シーンの境界を保護（統合で隣に飲み込ませない）
+                protected.append(scene.start_time)
+                if scene.end_time < self.current_job.scenes[-1].end_time:
+                    protected.append(scene.end_time)
+            self._blank_protected_times = protected
+            self.clip_list_widget.refresh_clips()
+            self.log_widget.append_log(
+                f"つなぎ目 {len(blank_scenes)} 個を書き出し対象から除外しました"
+            )
+
+    def _on_blank_detect_error(self, message: str):
+        self.log_widget.append_log(f"[ERROR] {message}")
+
+    def _on_blank_detect_finished(self):
+        """つなぎ目検出スレッドを片付け、統合提案・日付検出へ連鎖する"""
+        if self.sender() is not self.blank_detection_worker:
+            return
+        self.log_widget.hide_progress()
+        if self.blank_detection_thread:
+            self.blank_detection_thread.quit()
+            self.blank_detection_thread.wait()
+            self.blank_detection_thread = None
+            self.blank_detection_worker = None
+        if self.current_job:
+            self.log_widget.set_status(f"編集中: {self.current_job.filename}")
+
+        # つなぎ目処理が終わってから統合提案 → 日付検出
+        if getattr(self, "_propose_merge_after_blank", False):
+            self._propose_short_scene_merge()
         self._start_date_detection(auto=True)
 
     def _propose_short_scene_merge(self):
@@ -435,13 +531,16 @@ class MainWindow(QMainWindow):
 
         duration = self.current_job.scenes[-1].end_time
         boundaries = self.timeline_widget.get_boundaries()
+        protected = getattr(self, "_blank_protected_times", [])
 
         # 検出設定の最小シーン長より少し広めの初期値で提案する
         initial = max(3.0, self.timeline_widget.min_scene_spin.value())
-        if len(absorb_short_scenes(boundaries, duration, initial)) >= len(boundaries):
+        if len(absorb_short_scenes(boundaries, duration, initial, protected)) >= len(boundaries):
             return
 
-        dialog = MergeProposalDialog(boundaries, duration, initial, self)
+        dialog = MergeProposalDialog(
+            boundaries, duration, initial, self, protected_times=protected
+        )
         if dialog.exec() == MergeProposalDialog.Accepted:
             merged_count = dialog.merge_count()
             self.timeline_widget.replace_boundaries(dialog.merged_boundaries())
@@ -895,6 +994,12 @@ class MainWindow(QMainWindow):
                 self.date_detection_worker.cancel()
             self.date_detection_thread.quit()
             self.date_detection_thread.wait()
+
+        if self.blank_detection_thread and self.blank_detection_thread.isRunning():
+            if self.blank_detection_worker:
+                self.blank_detection_worker.cancel()
+            self.blank_detection_thread.quit()
+            self.blank_detection_thread.wait()
 
         if self.thumbnail_thread and self.thumbnail_thread.isRunning():
             if self.thumbnail_worker:
