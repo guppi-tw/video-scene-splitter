@@ -20,6 +20,7 @@ from app.ui.clip_list_widget import ClipListWidget
 from app.ui.log_widget import LogWidget
 from app.ui.merge_dialog import MergeProposalDialog
 from app.ui.blank_dialog import BlankCutDialog
+from app.ui.batch_progress_dialog import BatchProgressDialog
 from app.ui.preview_widget import PreviewWidget
 from app.ui.timeline_widget import TimelineWidget
 from app.ui.workers import (
@@ -55,6 +56,9 @@ class MainWindow(QMainWindow):
         self._pending_blank_segments: Optional[list] = None
         self.batch_detection_thread: QThread = None
         self.batch_detection_worker: BatchSceneDetectionWorker = None
+        self.batch_progress_dialog: BatchProgressDialog = None
+        self._batch_cancel_requested = False
+        self._batch_error = False
 
         # Undo履歴（境界のスナップショット）
         # 境界が変わるたびに変更前の状態を積む（分割・ドラッグ・追加・削除・
@@ -242,6 +246,15 @@ class MainWindow(QMainWindow):
         self.log_widget.set_status("一括シーン検出中")
         self.log_widget.append_log(f"{len(jobs)} 本の動画をシーン検出します...")
         self.queue_widget.set_detect_all_enabled(False)
+        self._batch_cancel_requested = False
+        self._batch_error = False
+
+        if self.batch_progress_dialog:
+            self.batch_progress_dialog.close()
+            self.batch_progress_dialog.deleteLater()
+        self.batch_progress_dialog = BatchProgressDialog(len(jobs), self)
+        self.batch_progress_dialog.cancel_requested.connect(self._on_batch_detect_cancel)
+        self.batch_progress_dialog.show()
 
         self.batch_detection_thread = QThread()
         self.batch_detection_worker = BatchSceneDetectionWorker(
@@ -250,7 +263,7 @@ class MainWindow(QMainWindow):
         self.batch_detection_worker.moveToThread(self.batch_detection_thread)
 
         self.batch_detection_thread.started.connect(self.batch_detection_worker.run)
-        self.batch_detection_worker.progress.connect(self._on_progress)
+        self.batch_detection_worker.progress.connect(self._on_batch_detect_progress)
         self.batch_detection_worker.progress_percent.connect(self._on_batch_detect_percent)
         self.batch_detection_worker.video_done.connect(self._on_batch_video_done)
         self.batch_detection_worker.error.connect(self._on_batch_detect_error)
@@ -258,24 +271,49 @@ class MainWindow(QMainWindow):
 
         self.batch_detection_thread.start()
 
+    def _on_batch_detect_progress(self, message: str):
+        self._on_progress(message)
+        if self.batch_progress_dialog:
+            self.batch_progress_dialog.set_current_message(message)
+
     def _on_batch_detect_percent(self, percent: int):
         self.log_widget.set_progress_bar(percent, 100)
         self.log_widget.set_detail(f"一括検出中: {percent}%")
+        if self.batch_progress_dialog:
+            self.batch_progress_dialog.set_progress(percent)
 
     def _on_batch_video_done(self, job_id: int, scene_count: int):
         job = self.job_queue.get_job_by_id(job_id)
         name = job.filename if job else f"job {job_id}"
-        self.log_widget.append_log(f"検出完了: {name} → {scene_count}本")
+        message = f"検出完了: {name} → {scene_count}本"
+        self.log_widget.append_log(message)
+        if self.batch_progress_dialog:
+            self.batch_progress_dialog.add_result(message)
         self.queue_widget.refresh()
 
     def _on_batch_detect_error(self, message: str):
+        self._batch_error = True
         self.log_widget.append_log(f"[ERROR] {message}")
+        if self.batch_progress_dialog:
+            self.batch_progress_dialog.add_result(f"[ERROR] {message}")
+
+    def _on_batch_detect_cancel(self):
+        self._batch_cancel_requested = True
+        self.log_widget.append_log("一括検出をキャンセルしています...")
+        if self.batch_detection_worker:
+            self.batch_detection_worker.cancel()
 
     def _on_batch_detect_finished(self):
         if self.sender() is not self.batch_detection_worker:
             return
         self.log_widget.hide_progress()
-        self.log_widget.set_status("一括検出完了")
+        if self._batch_error:
+            finished_message = "一括検出エラー"
+        elif self._batch_cancel_requested:
+            finished_message = "一括検出をキャンセルしました"
+        else:
+            finished_message = "一括検出完了"
+        self.log_widget.set_status(finished_message)
         if self.batch_detection_thread:
             self.batch_detection_thread.quit()
             self.batch_detection_thread.wait()
@@ -283,6 +321,8 @@ class MainWindow(QMainWindow):
             self.batch_detection_worker = None
         self.queue_widget.set_detect_all_enabled(True)
         self.queue_widget.refresh()
+        if self.batch_progress_dialog:
+            self.batch_progress_dialog.set_finished(finished_message)
 
     def _on_open_video(self, job: VideoJob):
         """動画を開いて編集開始"""
@@ -1216,6 +1256,10 @@ class MainWindow(QMainWindow):
                 self.batch_detection_worker.cancel()
             self.batch_detection_thread.quit()
             self.batch_detection_thread.wait()
+        if self.batch_progress_dialog:
+            self.batch_progress_dialog.set_finished("一括検出を終了しました")
+            self.batch_progress_dialog.close()
+            self.batch_progress_dialog = None
 
         if self.thumbnail_thread and self.thumbnail_thread.isRunning():
             if self.thumbnail_worker:
