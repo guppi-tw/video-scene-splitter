@@ -122,6 +122,8 @@ class VideoJob:
     clips: list[Clip] = field(default_factory=list)
     output_dir: Optional[Path] = None
     error_message: str = ""
+    # 一括検出で分割だけ済み、開いたときに後処理（つなぎ目→結合→日付）が必要
+    needs_post_process: bool = False
     
     @property
     def filename(self) -> str:

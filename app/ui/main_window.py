@@ -333,6 +333,13 @@ class MainWindow(QMainWindow):
         else:
             self.log_widget.append_log("「ここで分割」ボタンまたはタイムライン右クリックで境界を追加")
 
+        # 一括検出で分割だけ済んだ動画は、開いたときに
+        # つなぎ目カット → 結合提案 → 日付検出 を自動で走らせる
+        if job.needs_post_process:
+            job.needs_post_process = False
+            self._propose_merge_after_blank = len(job.scenes) > 1
+            self._start_blank_detection(manual=False)
+
     def _on_split_at_position(self, time: float):
         """指定位置で分割（自動一時停止）"""
         if not self.current_job or not self.current_job.scenes:
