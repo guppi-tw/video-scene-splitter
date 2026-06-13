@@ -48,7 +48,8 @@ class MergeProposalDialog(QDialog):
         spin_layout = QHBoxLayout()
         spin_layout.addWidget(QLabel("この長さ未満のシーンを統合:"))
         self.min_seconds_spin = QDoubleSpinBox()
-        self.min_seconds_spin.setRange(0.5, 60.0)
+        # 上限はクリップ自動分割の閾値(595秒)に合わせて10分まで許容する
+        self.min_seconds_spin.setRange(0.5, 600.0)
         self.min_seconds_spin.setSingleStep(0.5)
         self.min_seconds_spin.setDecimals(1)
         self.min_seconds_spin.setSuffix(" 秒")
