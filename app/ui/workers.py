@@ -168,7 +168,7 @@ class DateDetectionWorker(QObject):
 
     progress = Signal(str)
     progress_percent = Signal(int)  # 検出進捗 (0-100)
-    detection_complete = Signal(dict)  # {シーン番号: date}
+    detection_complete = Signal(dict)  # {'full': {idx: date}, 'ym': {idx: (y,m)}}
     error = Signal(str)
     finished = Signal()  # 完了・キャンセル・エラーのいずれでも最後に発火
 
@@ -189,7 +189,7 @@ class DateDetectionWorker(QObject):
             scene_times = [
                 (s.index, s.start_time, s.end_time) for s in self.job.scenes
             ]
-            results = detect_scene_dates(
+            full, year_months = detect_scene_dates(
                 self.job.source_path,
                 scene_times,
                 cancel_callback=lambda: self._cancelled,
@@ -200,7 +200,7 @@ class DateDetectionWorker(QObject):
             if self._cancelled:
                 self.progress.emit("日付検出はキャンセルされました")
                 return
-            self.detection_complete.emit(results)
+            self.detection_complete.emit({"full": full, "ym": year_months})
         except Exception as e:
             self.error.emit(f"日付検出エラー: {str(e)}")
         finally:

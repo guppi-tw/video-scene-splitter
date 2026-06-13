@@ -1,6 +1,31 @@
 from datetime import date
 
-from app.core.date_detector import infer_missing_dates, parse_date_from_text
+from app.core.date_detector import (
+    infer_missing_dates,
+    parse_date_from_text,
+    parse_year_month_from_text,
+)
+
+
+def test_parse_year_month_basic():
+    assert parse_year_month_from_text("1997. 1.") == (1997, 1)
+
+
+def test_parse_year_month_ignores_following_time():
+    # 日が読めず時刻が続くケース: "1997. 1. AM 9:55" → 年月のみ
+    assert parse_year_month_from_text("1997. 1. AM 9:55") == (1997, 1)
+
+
+def test_parse_year_month_rejects_bad_month():
+    assert parse_year_month_from_text("1997. 13.") is None
+
+
+def test_parse_year_month_rejects_no_month():
+    assert parse_year_month_from_text("1997 PM 9:46") is None
+
+
+def test_parse_year_month_out_of_range_year():
+    assert parse_year_month_from_text("2150. 1.") is None
 
 
 def test_infer_fills_gap_between_equal_neighbours():

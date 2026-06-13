@@ -769,47 +769,66 @@ class MainWindow(QMainWindow):
         self.log_widget.set_detail(f"日付検出中: {percent}%")
 
     def _on_date_detect_complete(self, results: dict):
-        """日付検出完了。検出した日付を各シーンに設定し、欠損は前後から補完する"""
+        """日付検出完了。完全な日付→年月(日補完)→前後推定の順で各シーンに設定する"""
         if not self.current_job:
             return
 
+        from datetime import date
         from app.core.date_detector import infer_missing_dates
 
+        full = results.get("full", {})
+        year_months = results.get("ym", {})
+        scenes = self.current_job.scenes
+
+        # 1) 完全な日付を設定
         applied = 0
-        for scene in self.current_job.scenes:
-            detected = results.get(scene.index)
-            if detected is not None:
-                scene.event_date = detected
+        for scene in scenes:
+            if scene.index in full:
+                scene.event_date = full[scene.index]
                 applied += 1
 
-        # 検出できなかったシーンを前後のシーンの日付から補完する
-        scene_indices = [s.index for s in self.current_job.scenes]
-        inferred = infer_missing_dates(scene_indices, results) if applied > 0 else {}
-        for scene in self.current_job.scenes:
-            if scene.index in inferred:
+        # 2) 年月だけ読めたシーンは日を補完（同年月の検出済みシーンの日があれば
+        #    それを、無ければ1日）。月が読めている分、前後推定より確度が高い。
+        day_by_ym: dict[tuple[int, int], int] = {}
+        for d in full.values():
+            day_by_ym.setdefault((d.year, d.month), d.day)
+        ym_applied = 0
+        for scene in scenes:
+            if scene.index in full or scene.index not in year_months:
+                continue
+            y, m = year_months[scene.index]
+            scene.event_date = date(y, m, day_by_ym.get((y, m), 1))
+            ym_applied += 1
+
+        # 3) まだ日付が無いシーンを前後のシーンから補完
+        anchors = {s.index: s.event_date for s in scenes if s.event_date is not None}
+        scene_indices = [s.index for s in scenes]
+        inferred = infer_missing_dates(scene_indices, anchors) if anchors else {}
+        for scene in scenes:
+            if scene.event_date is None and scene.index in inferred:
                 scene.event_date = inferred[scene.index]
 
-        total = len(self.current_job.scenes)
-        inferred_count = len(inferred)
+        total = len(scenes)
+        set_count = sum(1 for s in scenes if s.event_date is not None)
+        approx = ym_applied + len(inferred)
 
-        if applied > 0:
+        if set_count > 0:
             self.clip_list_widget.refresh_clips()
-            msg = f"日付検出: {applied}/{total} シーンで日付を検出して設定しました"
-            if inferred_count > 0:
-                nums = "、".join(f"#{i}" for i in sorted(inferred))
-                msg += f"（さらに {inferred_count} シーンを前後から推定: {nums}）"
+            msg = (
+                f"日付検出: {applied}/{total} シーンを検出"
+                + (f"、{approx} シーンを月/前後から推定" if approx else "")
+            )
             self.log_widget.append_log(msg)
             if not self._date_detect_auto:
                 extra = (
-                    f"\n\n検出できなかった {inferred_count} シーンは前後のクリップから\n"
-                    "日付を推定して設定しました（必要なら手動で修正できます）。"
-                    if inferred_count > 0 else ""
+                    f"\n\nうち {approx} シーンは月情報や前後のクリップから推定しました\n"
+                    "（必要なら手動で修正できます）。"
+                    if approx else ""
                 )
                 QMessageBox.information(
                     self,
                     "日付検出完了",
-                    f"{applied}/{total} シーンで焼き込み日付を検出し、\n"
-                    f"クリップの日付に設定しました。{extra}\n\n"
+                    f"{set_count}/{total} シーンに日付を設定しました。{extra}\n\n"
                     f"ファイル名のプレビューで確認できます。",
                 )
         else:

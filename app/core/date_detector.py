@@ -54,6 +54,8 @@ _XXY4_RE = re.compile(
 _YMD2_RE = re.compile(
     r"\b(\d{2})\s*[.,/\-]\s*(\d{1,2})\s*[.,/\-]\s*(\d{1,2})\b"
 )
+# 年+月のみ（日が読めないとき用）: 1997. 1. / 1997.1 / 1997年1月
+_YM_RE = re.compile(r"(19[5-9]\d|20\d{2})" + _SEP_YM + r"(\d{1,2})")
 
 
 def _make_date(year: int, month: int, day: int) -> Optional[date]:
@@ -100,6 +102,21 @@ def parse_date_from_text(text: str) -> Optional[date]:
         if result:
             return result
 
+    return None
+
+
+def parse_year_month_from_text(text: str) -> Optional[tuple[int, int]]:
+    """年+月だけを抽出する（日が読めないスタンプ用）。
+
+    昔のテープの "1997. 1. 1" は日の桁が潰れてOCRで落ちやすい。年と月は
+    安定して読めることが多いので、完全な日付が取れないときの補助に使う。
+    """
+    m = _YM_RE.search(text)
+    if not m:
+        return None
+    year, month = int(m.group(1)), int(m.group(2))
+    if _MIN_YEAR <= year <= _MAX_YEAR and 1 <= month <= 12:
+        return year, month
     return None
 
 
@@ -204,9 +221,10 @@ def _candidate_dates_in_frame(
     time_sec: float,
     work_dir: Path,
     frame_id: int,
-) -> list[date]:
-    """1フレームを複数領域でOCRし、見つかった日付候補をすべて返す"""
-    candidates: list[date] = []
+) -> tuple[list[date], list[tuple[int, int]]]:
+    """1フレームを複数領域でOCRし、(完全な日付候補, 年月候補) を返す"""
+    dates: list[date] = []
+    year_months: list[tuple[int, int]] = []
     for region_index, video_filter in enumerate(_REGION_FILTERS):
         frame_path = work_dir / f"datecheck_{frame_id}_{region_index}.png"
         if not runner.extract_frame(video_path, time_sec, frame_path, video_filter):
@@ -215,13 +233,16 @@ def _candidate_dates_in_frame(
             for line in _ocr_image_lines(frame_path):
                 detected = parse_date_from_text(line)
                 if detected:
-                    candidates.append(detected)
+                    dates.append(detected)
+                ym = parse_year_month_from_text(line)
+                if ym:
+                    year_months.append(ym)
         finally:
             try:
                 frame_path.unlink()
             except OSError:
                 pass
-    return candidates
+    return dates, year_months
 
 
 def _sample_times(start: float, end: float) -> list[float]:
@@ -237,23 +258,25 @@ def detect_scene_dates(
     scene_times: list[tuple[int, float, float]],
     cancel_callback: Optional[Callable[[], bool]] = None,
     progress_callback: Optional[Callable[[int, int], None]] = None,
-) -> dict[int, date]:
+) -> tuple[dict[int, date], dict[int, tuple[int, int]]]:
     """各シーンの焼き込み日付を検出する。
 
     スタンプはシーン中ほぼ一定なので、複数フレーム×複数領域で読み取り、
     同じ日付が2回出たら確定（OCR誤読への保険）。一致しない場合は最多得票を採用。
+    完全な日付が取れなくても年月だけ読めたシーンは別途返す（日は後で補完）。
 
     Args:
         scene_times: (シーン番号, 開始秒, 終了秒) のリスト
         progress_callback: (処理済みシーン数, 全シーン数) を受け取る
 
     Returns:
-        {シーン番号: 検出した日付}（検出できたシーンのみ）
+        ({シーン番号: 完全な日付}, {シーン番号: (年, 月)})
     """
     from collections import Counter
 
     runner = FFmpegRunner()
     results: dict[int, date] = {}
+    ym_results: dict[int, tuple[int, int]] = {}
 
     with tempfile.TemporaryDirectory(prefix="vss-datecheck-") as tmp:
         work_dir = Path(tmp)
@@ -263,14 +286,18 @@ def detect_scene_dates(
                 break
 
             votes: Counter = Counter()
+            ym_votes: Counter = Counter()
             confirmed: Optional[date] = None
 
             for frame_id, time_sec in enumerate(_sample_times(start, end)):
                 if cancel_callback is not None and cancel_callback():
                     break
-                for detected in _candidate_dates_in_frame(
+                dates, year_months = _candidate_dates_in_frame(
                     runner, video_path, time_sec, work_dir, frame_id
-                ):
+                )
+                for ym in year_months:
+                    ym_votes[ym] += 1
+                for detected in dates:
                     votes[detected] += 1
                     if votes[detected] >= 2:
                         confirmed = detected
@@ -282,8 +309,11 @@ def detect_scene_dates(
                 confirmed = votes.most_common(1)[0][0]
             if confirmed is not None:
                 results[index] = confirmed
+            elif ym_votes:
+                # 完全な日付は取れなかったが年月は読めた → 補助として残す
+                ym_results[index] = ym_votes.most_common(1)[0][0]
 
             if progress_callback is not None:
                 progress_callback(done + 1, len(scene_times))
 
-    return results
+    return results, ym_results
