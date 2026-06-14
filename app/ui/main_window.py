@@ -59,6 +59,8 @@ class MainWindow(QMainWindow):
         self.batch_progress_dialog: BatchProgressDialog = None
         self._batch_cancel_requested = False
         self._batch_error = False
+        self._defer_thumbnail_regen = False
+        self._thumbnail_regen_pending = False
 
         # Undo履歴（境界のスナップショット）
         # 境界が変わるたびに変更前の状態を積む（分割・ドラッグ・追加・削除・
@@ -246,6 +248,10 @@ class MainWindow(QMainWindow):
             )
             return
 
+        will_auto_post_process = job.needs_post_process
+        if will_auto_post_process:
+            self._begin_deferred_thumbnails()
+
         self.log_widget.clear_log()
         self.log_widget.set_status("一括シーン検出中")
         self.log_widget.append_log(f"{len(jobs)} 本の動画をシーン検出します...")
@@ -350,6 +356,10 @@ class MainWindow(QMainWindow):
             )
             return
 
+        will_auto_post_process = job.needs_post_process
+        if will_auto_post_process:
+            self._begin_deferred_thumbnails()
+
         self.log_widget.append_log(f"動画の長さ: {format_seconds(duration)}")
 
         # 一括検出済みなどで既にシーンがある場合はそれを保持し、
@@ -383,7 +393,8 @@ class MainWindow(QMainWindow):
         if job.needs_post_process:
             job.needs_post_process = False
             self._propose_merge_after_blank = len(job.scenes) > 1
-            self._start_blank_detection(manual=False)
+            if not self._start_blank_detection(manual=False):
+                self._finish_deferred_thumbnails()
 
     def _on_split_at_position(self, time: float):
         """指定位置で分割（自動一時停止）"""
@@ -440,9 +451,26 @@ class MainWindow(QMainWindow):
         self.thumbnail_thread = None
         self.thumbnail_worker = None
 
+    def _begin_deferred_thumbnails(self):
+        """自動後処理中はサムネイル生成を止め、最後に1回だけ再生成する"""
+        self._defer_thumbnail_regen = True
+        self._thumbnail_regen_pending = False
+        self._stop_thumbnail_worker()
+
+    def _finish_deferred_thumbnails(self):
+        """保留していたサムネイル再生成を必要なら実行する"""
+        should_regenerate = self._thumbnail_regen_pending
+        self._defer_thumbnail_regen = False
+        self._thumbnail_regen_pending = False
+        if should_regenerate:
+            self._regenerate_thumbnails()
+
     def _regenerate_thumbnails(self):
         """バックグラウンドでサムネイルを再生成（生成済みシーンはスキップ）"""
         if not self.current_job:
+            return
+        if self._defer_thumbnail_regen:
+            self._thumbnail_regen_pending = True
             return
 
         # 既存のサムネイルワーカーを停止
@@ -550,6 +578,7 @@ class MainWindow(QMainWindow):
             self._finish_scene_detection()
             return
 
+        self._begin_deferred_thumbnails()
         duration = self.current_job.scenes[-1].end_time
         existing_boundaries = self.timeline_widget.get_boundaries()
         merged_boundaries = merge_boundaries(
@@ -574,7 +603,8 @@ class MainWindow(QMainWindow):
         #   つなぎ目(単色)検出 → 統合提案 → 日付検出
         # つなぎ目検出が終わってから統合提案・日付検出へ連鎖する
         self._propose_merge_after_blank = added_count > 0
-        self._start_blank_detection(manual=False)
+        if not self._start_blank_detection(manual=False):
+            self._finish_deferred_thumbnails()
 
     def _on_blank_detect_requested(self):
         """クリップ一覧から手動でつなぎ目検出を開始"""
@@ -592,12 +622,12 @@ class MainWindow(QMainWindow):
         manual=False（自動）の場合のみ、完了後に統合提案・日付検出へ連鎖する。
         """
         if not self.current_job or not self.current_job.scenes:
-            return
+            return False
 
         if self.blank_detection_thread and self.blank_detection_thread.isRunning():
             if manual:
                 QMessageBox.warning(self, "警告", "つなぎ目検出を実行中です")
-            return
+            return False
 
         self._blank_manual = manual
         self._pending_blank_segments = None
@@ -617,6 +647,7 @@ class MainWindow(QMainWindow):
         self.blank_detection_worker.finished.connect(self._on_blank_detect_finished)
 
         self.blank_detection_thread.start()
+        return True
 
     def _on_blank_detect_percent(self, percent: int):
         self.log_widget.set_progress_bar(percent, 100)
@@ -709,7 +740,8 @@ class MainWindow(QMainWindow):
         # 自動実行時のみ: 2) 結合提案 → 3) 日付検出
         if getattr(self, "_propose_merge_after_blank", False):
             self._propose_short_scene_merge()
-        self._start_date_detection(auto=True)
+        if not self._start_date_detection(auto=True):
+            self._finish_deferred_thumbnails()
 
     def _protected_boundaries_from_dropped(self) -> List[float]:
         """除外(keep=False)シーンの境界を保護対象として返す。
@@ -804,12 +836,12 @@ class MainWindow(QMainWindow):
         ダイアログは出さない）
         """
         if not self.current_job or not self.current_job.scenes:
-            return
+            return False
 
         if self.date_detection_thread and self.date_detection_thread.isRunning():
             if not auto:
                 QMessageBox.warning(self, "警告", "日付検出中です")
-            return
+            return False
 
         self._date_detect_auto = auto
         self.log_widget.append_log("焼き込み日付の検出を開始します...")
@@ -828,6 +860,7 @@ class MainWindow(QMainWindow):
         self.date_detection_worker.finished.connect(self._on_date_detect_finished)
 
         self.date_detection_thread.start()
+        return True
 
     def _on_date_detect_cancel(self):
         """日付検出の中止リクエスト"""
@@ -930,6 +963,8 @@ class MainWindow(QMainWindow):
             self.date_detection_thread = None
             self.date_detection_worker = None
         self.clip_list_widget.set_date_detecting(False)
+        if self._date_detect_auto:
+            self._finish_deferred_thumbnails()
 
     def _update_timeline(self, job: VideoJob):
         """タイムラインを更新"""

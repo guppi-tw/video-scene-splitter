@@ -24,6 +24,10 @@ def _blank_finished_window(*, manual: bool, propose_merge: bool, segments: list)
     worker = object()
     calls = []
 
+    def start_date_detection(auto):
+        calls.append(("date", auto))
+        return True
+
     window = SimpleNamespace(
         blank_detection_worker=worker,
         blank_detection_thread=None,
@@ -37,7 +41,8 @@ def _blank_finished_window(*, manual: bool, propose_merge: bool, segments: list)
     )
     window._apply_blank_segments = lambda found: calls.append(("blank", found))
     window._propose_short_scene_merge = lambda: calls.append(("merge", None))
-    window._start_date_detection = lambda auto: calls.append(("date", auto))
+    window._start_date_detection = start_date_detection
+    window._finish_deferred_thumbnails = lambda: calls.append(("thumbnails", None))
     return window, calls
 
 
@@ -93,3 +98,22 @@ def test_queue_clip_preview_does_not_start_post_process_pipeline(tmp_path):
 
     assert calls == [("selected", job.id), ("seek", 4.5)]
     assert job.needs_post_process is True
+
+
+def test_thumbnail_regeneration_is_deferred_until_auto_post_process_finishes():
+    calls = []
+    window = SimpleNamespace(
+        _defer_thumbnail_regen=False,
+        _thumbnail_regen_pending=False,
+        _stop_thumbnail_worker=lambda: calls.append("stop"),
+        current_job=object(),
+    )
+
+    MainWindow._begin_deferred_thumbnails(window)
+    MainWindow._regenerate_thumbnails(window)
+    window._regenerate_thumbnails = lambda: calls.append("regenerate")
+    MainWindow._finish_deferred_thumbnails(window)
+
+    assert calls == ["stop", "regenerate"]
+    assert window._defer_thumbnail_regen is False
+    assert window._thumbnail_regen_pending is False
