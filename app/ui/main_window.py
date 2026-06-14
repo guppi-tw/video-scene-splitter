@@ -30,6 +30,13 @@ from app.ui.workers import (
 from app.core.scene_detector import absorb_short_scenes, merge_boundaries
 
 
+def _boundaries_equal(left: List[float], right: List[float], tolerance: float = 1e-6) -> bool:
+    """境界リストが実質同じか判定する"""
+    if len(left) != len(right):
+        return False
+    return all(abs(a - b) <= tolerance for a, b in zip(left, right))
+
+
 class MainWindow(QMainWindow):
     """メインウィンドウ"""
 
@@ -166,6 +173,8 @@ class MainWindow(QMainWindow):
 
     def _on_job_selected(self, job: VideoJob):
         """ジョブ選択時（既に編集中のジョブを表示）"""
+        if job is self.current_job:
+            return
         if job.status in [JobStatus.REVIEW, JobStatus.DONE]:
             self.current_job = job
             self.clip_list_widget.set_job(job)
@@ -247,10 +256,6 @@ class MainWindow(QMainWindow):
                 "既に開いた動画はそれぞれの画面で検出してください。"
             )
             return
-
-        will_auto_post_process = job.needs_post_process
-        if will_auto_post_process:
-            self._begin_deferred_thumbnails()
 
         self.log_widget.clear_log()
         self.log_widget.set_status("一括シーン検出中")
@@ -417,6 +422,8 @@ class MainWindow(QMainWindow):
     def _on_boundaries_changed(self, boundaries: List[float]):
         """タイムラインの境界が変更された"""
         if not self.current_job:
+            return
+        if self._last_boundaries is not None and _boundaries_equal(boundaries, self._last_boundaries):
             return
 
         duration = self.current_job.scenes[-1].end_time if self.current_job.scenes else 0

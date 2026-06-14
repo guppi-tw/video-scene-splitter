@@ -15,6 +15,12 @@ from app.core.scene_detector import SceneDetectionSettings
 from app.core.time_format import format_seconds
 
 
+def _same_times(left: List[float], right: List[float], tolerance: float = 1e-6) -> bool:
+    if len(left) != len(right):
+        return False
+    return all(abs(a - b) <= tolerance for a, b in zip(left, right))
+
+
 @dataclass
 class BoundaryMarker:
     """境界マーカー"""
@@ -431,6 +437,9 @@ class TimelineWidget(QWidget):
         })
         if not normalized or normalized[0] != 0.0:
             normalized.insert(0, 0.0)
+
+        if _same_times(normalized, self.scene_start_times):
+            return
 
         self.scene_start_times = normalized
         self.timeline_bar.set_boundaries(normalized)

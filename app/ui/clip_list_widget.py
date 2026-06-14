@@ -195,6 +195,7 @@ class ClipListWidget(QWidget):
         super().__init__()
         self.current_job: Optional[VideoJob] = None
         self._clip_rows: list[ClipRow] = []
+        self._clip_rows_by_scene_index: dict[int, ClipRow] = {}
         self._setup_ui()
 
     def _setup_ui(self):
@@ -341,6 +342,7 @@ class ClipListWidget(QWidget):
             row.setParent(None)
             row.deleteLater()
         self._clip_rows.clear()
+        self._clip_rows_by_scene_index.clear()
         self.event_name_edit.blockSignals(True)
         self.date_check.blockSignals(True)
         self.event_name_edit.clear()
@@ -358,6 +360,7 @@ class ClipListWidget(QWidget):
             row.setParent(None)
             row.deleteLater()
         self._clip_rows.clear()
+        self._clip_rows_by_scene_index.clear()
 
         # stretchを除去して再追加
         while self.scroll_layout.count():
@@ -372,6 +375,7 @@ class ClipListWidget(QWidget):
             row.keep_changed.connect(self._on_individual_keep_changed)
             row.selection_changed.connect(self._on_selection_changed)
             self._clip_rows.append(row)
+            self._clip_rows_by_scene_index[scene.index] = row
             self.scroll_layout.addWidget(row)
 
         self.scroll_layout.addStretch()
@@ -380,10 +384,9 @@ class ClipListWidget(QWidget):
 
     def update_thumbnail(self, scene_index: int, path: str):
         """特定クリップのサムネイルを更新"""
-        for row in self._clip_rows:
-            if row.scene.index == scene_index:
-                row.set_thumbnail(path)
-                break
+        row = self._clip_rows_by_scene_index.get(scene_index)
+        if row:
+            row.set_thumbnail(path)
 
     def _on_default_metadata_changed(self):
         """デフォルトメタデータが変更された"""

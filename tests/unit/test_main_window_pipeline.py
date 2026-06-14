@@ -4,7 +4,8 @@ main_window.py の自動後処理パイプライン順序テスト
 from types import SimpleNamespace
 
 from app.core.jobs import JobStatus, Scene, VideoJob
-from app.ui.main_window import MainWindow
+from app.ui import main_window as main_window_module
+from app.ui.main_window import MainWindow, _boundaries_equal
 
 
 class _LogStub:
@@ -117,3 +118,121 @@ def test_thumbnail_regeneration_is_deferred_until_auto_post_process_finishes():
     assert calls == ["stop", "regenerate"]
     assert window._defer_thumbnail_regen is False
     assert window._thumbnail_regen_pending is False
+
+
+def test_same_job_selection_does_not_reload_or_regenerate_thumbnails(tmp_path):
+    video_path = tmp_path / "video.mp4"
+    video_path.touch()
+    job = VideoJob(id=1, source_path=video_path, status=JobStatus.REVIEW)
+    calls = []
+    window = SimpleNamespace(
+        current_job=job,
+        clip_list_widget=SimpleNamespace(set_job=lambda _job: calls.append("set_job")),
+        preview_widget=SimpleNamespace(load_video=lambda _path: calls.append("load")),
+        _update_timeline=lambda _job: calls.append("timeline"),
+        _undo_stack=[],
+        _last_boundaries=[],
+        _regenerate_thumbnails=lambda: calls.append("thumbs"),
+    )
+
+    MainWindow._on_job_selected(window, job)
+
+    assert calls == []
+
+
+def test_boundaries_changed_noops_when_boundaries_are_unchanged():
+    calls = []
+    job = SimpleNamespace(
+        scenes=[SimpleNamespace(start_time=0.0, end_time=10.0)],
+        rebuild_scenes_from_boundaries=lambda *_args: calls.append("rebuild"),
+    )
+    window = SimpleNamespace(
+        current_job=job,
+        _last_boundaries=[0.0],
+        _undoing=False,
+        _undo_stack=[],
+        clip_list_widget=SimpleNamespace(refresh_clips=lambda: calls.append("refresh")),
+        _regenerate_thumbnails=lambda: calls.append("thumbs"),
+        log_widget=SimpleNamespace(append_log=lambda _message: calls.append("log")),
+    )
+
+    MainWindow._on_boundaries_changed(window, [0.0])
+
+    assert calls == []
+    assert _boundaries_equal([0.0, 1.0], [0.0, 1.0])
+
+
+def test_detect_all_start_builds_batch_worker_without_open_video_state(monkeypatch, tmp_path):
+    video_path = tmp_path / "video.mp4"
+    video_path.touch()
+    job = VideoJob(id=1, source_path=video_path, status=JobStatus.WAITING)
+    calls = []
+
+    class SignalStub:
+        def connect(self, _slot):
+            calls.append("connect")
+
+    class FakeThread:
+        def __init__(self):
+            self.started = SignalStub()
+
+        def start(self):
+            calls.append("thread_start")
+
+    class FakeWorker:
+        def __init__(self, jobs, settings):
+            calls.append(("worker", [j.id for j in jobs], settings))
+            self.progress = SignalStub()
+            self.progress_percent = SignalStub()
+            self.video_done = SignalStub()
+            self.error = SignalStub()
+            self.finished = SignalStub()
+
+        def moveToThread(self, _thread):
+            calls.append("move_worker")
+
+        def run(self):
+            pass
+
+    class FakeBatchProgressDialog:
+        def __init__(self, total, _parent):
+            calls.append(("dialog", total))
+            self.cancel_requested = SignalStub()
+
+        def show(self):
+            calls.append("dialog_show")
+
+    monkeypatch.setattr(main_window_module, "QThread", FakeThread)
+    monkeypatch.setattr(
+        main_window_module, "BatchSceneDetectionWorker", FakeWorker
+    )
+    monkeypatch.setattr(
+        main_window_module, "BatchProgressDialog", FakeBatchProgressDialog
+    )
+
+    window = SimpleNamespace(
+        batch_detection_thread=None,
+        batch_detection_worker=None,
+        batch_progress_dialog=None,
+        job_queue=SimpleNamespace(get_all_jobs=lambda: [job]),
+        timeline_widget=SimpleNamespace(get_detection_settings=lambda: "settings"),
+        log_widget=SimpleNamespace(
+            clear_log=lambda: calls.append("clear_log"),
+            set_status=lambda message: calls.append(("status", message)),
+            append_log=lambda message: calls.append(("log", message)),
+        ),
+        queue_widget=SimpleNamespace(
+            set_detect_all_enabled=lambda enabled: calls.append(("detect_all", enabled))
+        ),
+        _on_batch_detect_progress=lambda _message: None,
+        _on_batch_detect_percent=lambda _percent: None,
+        _on_batch_video_done=lambda _job_id, _scene_count: None,
+        _on_batch_detect_error=lambda _message: None,
+        _on_batch_detect_finished=lambda: None,
+        _on_batch_detect_cancel=lambda: None,
+    )
+
+    MainWindow._on_detect_all_requested(window)
+
+    assert ("worker", [1], "settings") in calls
+    assert "thread_start" in calls
