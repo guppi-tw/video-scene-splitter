@@ -6,7 +6,7 @@ from pathlib import Path
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QPushButton,
     QTreeWidget, QTreeWidgetItem, QHeaderView,
-    QFileDialog, QAbstractItemView, QLabel, QMessageBox
+    QFileDialog, QAbstractItemView, QLabel, QMessageBox, QFrame
 )
 from PySide6.QtCore import Signal, Qt
 from PySide6.QtGui import QBrush, QColor
@@ -67,6 +67,12 @@ class QueueWidget(QWidget):
         self.setAcceptDrops(True)
         self._setup_ui()
 
+    @staticmethod
+    def _section_label(text: str) -> QLabel:
+        label = QLabel(text)
+        label.setStyleSheet("color: #9a9a9a; font-size: 10px; font-weight: bold;")
+        return label
+
     def _setup_ui(self):
         layout = QVBoxLayout(self)
         layout.setSpacing(5)
@@ -76,29 +82,47 @@ class QueueWidget(QWidget):
         header.setStyleSheet("font-weight: bold; font-size: 13px; padding: 2px 0;")
         layout.addWidget(header)
 
-        # ボタン行
-        btn_layout = QHBoxLayout()
+        # 操作バー
+        action_bar = QFrame()
+        action_bar.setObjectName("queueActionBar")
+        action_bar.setStyleSheet(
+            "QFrame#queueActionBar { background-color: #242424; "
+            "border: 1px solid #3a3a3a; border-radius: 4px; }"
+        )
+        btn_layout = QVBoxLayout(action_bar)
+        btn_layout.setContentsMargins(8, 5, 8, 5)
         btn_layout.setSpacing(4)
 
         self.btn_add_file = QPushButton("+ ファイル")
         self.btn_add_file.clicked.connect(self._on_add_file)
-        btn_layout.addWidget(self.btn_add_file)
 
         self.btn_add_folder = QPushButton("+ フォルダ")
         self.btn_add_folder.clicked.connect(self._on_add_folder)
-        btn_layout.addWidget(self.btn_add_folder)
 
-        self.btn_remove = QPushButton("削除")
-        self.btn_remove.clicked.connect(self._on_remove)
-        btn_layout.addWidget(self.btn_remove)
-
-        layout.addLayout(btn_layout)
-
-        # 一括検出ボタン
         self.btn_detect_all = QPushButton("全部検出")
         self.btn_detect_all.setToolTip("待機中の全動画にシーン検出をまとめて実行します")
         self.btn_detect_all.clicked.connect(self.detect_all_requested.emit)
-        layout.addWidget(self.btn_detect_all)
+
+        self.btn_remove = QPushButton("削除")
+        self.btn_remove.clicked.connect(self._on_remove)
+
+        add_layout = QHBoxLayout()
+        add_layout.setSpacing(5)
+        add_layout.addWidget(self._section_label("追加"))
+        add_layout.addWidget(self.btn_add_file)
+        add_layout.addWidget(self.btn_add_folder)
+        add_layout.addStretch()
+        btn_layout.addLayout(add_layout)
+
+        process_layout = QHBoxLayout()
+        process_layout.setSpacing(5)
+        process_layout.addWidget(self._section_label("処理"))
+        process_layout.addWidget(self.btn_detect_all)
+        process_layout.addStretch()
+        process_layout.addWidget(self.btn_remove)
+        btn_layout.addLayout(process_layout)
+
+        layout.addWidget(action_bar)
 
         # ツリー（動画 → 分割クリップ）
         self.tree = QTreeWidget()

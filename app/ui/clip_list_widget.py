@@ -96,6 +96,7 @@ class ClipRow(QFrame):
 
         # ファイル名入力
         self.filename_edit = QLineEdit()
+        self.filename_edit.setMinimumWidth(80)
         auto_name = self.job.get_clip_filename(Clip(
             index=self.scene.index,
             start_time=self.scene.start_time,
@@ -117,12 +118,14 @@ class ClipRow(QFrame):
 
         # Keep/Dropチェックボックス
         self.keep_check = QCheckBox("Keep")
+        self.keep_check.setMinimumWidth(58)
         self.keep_check.setChecked(self.scene.keep)
         self.keep_check.stateChanged.connect(self._on_keep_changed)
         check_layout.addWidget(self.keep_check)
 
         # 要注意チェックボックス
         self.sensitive_check = QCheckBox("要注意")
+        self.sensitive_check.setMinimumWidth(58)
         self.sensitive_check.setToolTip("クラウド共有前に確認したいクリップを別フォルダへ書き出します")
         self.sensitive_check.setChecked(self.scene.is_sensitive)
         self.sensitive_check.setEnabled(self.scene.keep)
@@ -198,21 +201,47 @@ class ClipListWidget(QWidget):
         self._clip_rows_by_scene_index: dict[int, ClipRow] = {}
         self._setup_ui()
 
+    @staticmethod
+    def _section_label(text: str) -> QLabel:
+        label = QLabel(text)
+        label.setStyleSheet("color: #9a9a9a; font-size: 10px; font-weight: bold;")
+        return label
+
     def _setup_ui(self):
         layout = QVBoxLayout(self)
         layout.setContentsMargins(5, 5, 5, 5)
         layout.setSpacing(5)
 
         # メタデータバー
-        meta_layout = QHBoxLayout()
+        meta_bar = QFrame()
+        meta_bar.setObjectName("clipMetaBar")
+        meta_bar.setStyleSheet(
+            "QFrame#clipMetaBar { background-color: #242424; "
+            "border: 1px solid #3a3a3a; border-radius: 4px; }"
+        )
+        meta_layout = QVBoxLayout(meta_bar)
+        meta_layout.setContentsMargins(8, 5, 8, 5)
+        meta_layout.setSpacing(4)
 
-        meta_layout.addWidget(QLabel("ファイル名:"))
+        name_layout = QHBoxLayout()
+        name_layout.setSpacing(6)
+        name_layout.addWidget(self._section_label("既定値"))
+        name_layout.addWidget(QLabel("ファイル名:"))
         self.event_name_edit = QLineEdit()
+        self.event_name_edit.setMinimumWidth(90)
         self.event_name_edit.setPlaceholderText("出力ファイル名（未指定なら元ファイル名）")
         self.event_name_edit.editingFinished.connect(self._on_default_metadata_changed)
-        meta_layout.addWidget(self.event_name_edit, stretch=1)
+        name_layout.addWidget(self.event_name_edit, stretch=1)
 
-        meta_layout.addWidget(QLabel("日付:"))
+        self.btn_apply_all = QPushButton("全体に適用")
+        self.btn_apply_all.setToolTip("ファイル名と日付を全クリップに適用")
+        self.btn_apply_all.clicked.connect(self._on_apply_all)
+        name_layout.addWidget(self.btn_apply_all)
+        meta_layout.addLayout(name_layout)
+
+        date_layout = QHBoxLayout()
+        date_layout.setSpacing(6)
+        date_layout.addWidget(self._section_label("日付"))
         self.date_edit = QDateEdit()
         self.date_edit.setCalendarPopup(True)
         self.date_edit.setDate(QDate.currentDate())
@@ -221,35 +250,34 @@ class ClipListWidget(QWidget):
         self.date_check.setToolTip("日付を有効化")
         self.date_check.stateChanged.connect(self._on_default_metadata_changed)
         self.date_edit.dateChanged.connect(self._on_default_metadata_changed)
-        meta_layout.addWidget(self.date_check)
-        meta_layout.addWidget(self.date_edit)
+        date_layout.addWidget(self.date_check)
+        date_layout.addWidget(self.date_edit)
+        date_layout.addStretch()
+        meta_layout.addLayout(date_layout)
 
-        self.btn_apply_all = QPushButton("全体に適用")
-        self.btn_apply_all.setToolTip("ファイル名と日付を全クリップに適用")
-        self.btn_apply_all.clicked.connect(self._on_apply_all)
-        meta_layout.addWidget(self.btn_apply_all)
+        layout.addWidget(meta_bar)
 
-        layout.addLayout(meta_layout)
-
-        # 結合バー
-        merge_layout = QHBoxLayout()
-        self.merge_hint_label = QLabel("チェックで結合対象を選択")
-        self.merge_hint_label.setStyleSheet("color: #888; font-size: 10px;")
-        merge_layout.addWidget(self.merge_hint_label)
-        merge_layout.addStretch()
+        # 操作バー
+        action_bar = QFrame()
+        action_bar.setObjectName("clipActionBar")
+        action_bar.setStyleSheet(
+            "QFrame#clipActionBar { background-color: #202020; "
+            "border: 1px solid #333; border-radius: 4px; }"
+        )
+        action_layout = QVBoxLayout(action_bar)
+        action_layout.setContentsMargins(8, 5, 8, 5)
+        action_layout.setSpacing(4)
 
         self._blank_detecting = False
         self.btn_blank_detect = QPushButton("つなぎ目検出")
         self.btn_blank_detect.setToolTip("単色（青/黒/白）のつなぎ目を検出して除外提案を出します")
         self.btn_blank_detect.setEnabled(False)
         self.btn_blank_detect.clicked.connect(self._on_blank_detect_clicked)
-        merge_layout.addWidget(self.btn_blank_detect)
 
         self.btn_short_merge = QPushButton("短いシーンを結合")
         self.btn_short_merge.setToolTip("短いシーンをまとめる結合提案をもう一度出します")
         self.btn_short_merge.setEnabled(False)
         self.btn_short_merge.clicked.connect(self.short_merge_requested.emit)
-        merge_layout.addWidget(self.btn_short_merge)
 
         self._date_detecting = False
         self.btn_date_detect = QPushButton("日付検出")
@@ -259,15 +287,53 @@ class ClipListWidget(QWidget):
         )
         self.btn_date_detect.setEnabled(False)
         self.btn_date_detect.clicked.connect(self._on_date_detect_clicked)
-        merge_layout.addWidget(self.btn_date_detect)
 
+        post_layout = QHBoxLayout()
+        post_layout.setSpacing(6)
+        post_layout.addWidget(self._section_label("後処理"))
+        post_layout.addWidget(self.btn_blank_detect)
+        post_layout.addWidget(self.btn_short_merge)
+        post_layout.addWidget(self.btn_date_detect)
+        post_layout.addStretch()
+        action_layout.addLayout(post_layout)
+
+        self.merge_hint_label = QLabel("チェックで結合対象を選択")
+        self.merge_hint_label.setStyleSheet("color: #aaa; font-size: 10px;")
         self.btn_merge = QPushButton("選択を結合")
         self.btn_merge.setToolTip("選択した連続するシーンを1つのクリップにまとめます")
         self.btn_merge.setEnabled(False)
         self.btn_merge.clicked.connect(self._on_merge)
-        merge_layout.addWidget(self.btn_merge)
 
-        layout.addLayout(merge_layout)
+        merge_layout = QHBoxLayout()
+        merge_layout.setSpacing(6)
+        merge_layout.addWidget(self._section_label("結合"))
+        merge_layout.addWidget(self.merge_hint_label, stretch=1)
+        merge_layout.addWidget(self.btn_merge)
+        action_layout.addLayout(merge_layout)
+
+        self.auto_split_check = QCheckBox("9:55で自動分割")
+        self.auto_split_check.setChecked(True)
+        self.auto_split_check.setToolTip("595秒超のクリップを自動分割")
+
+        self.keep_all_check = QCheckBox("全てKeep")
+        self.keep_all_check.setChecked(True)
+        self.keep_all_check.setToolTip("全クリップの Keep/Drop を一括切り替え")
+        self.keep_all_check.stateChanged.connect(self._on_keep_all_toggled)
+
+        self.btn_export = QPushButton("書き出し")
+        self.btn_export.setObjectName("btn_export")
+        self.btn_export.clicked.connect(self._on_export)
+
+        export_layout = QHBoxLayout()
+        export_layout.setSpacing(6)
+        export_layout.addWidget(self._section_label("出力"))
+        export_layout.addWidget(self.auto_split_check)
+        export_layout.addWidget(self.keep_all_check)
+        export_layout.addStretch()
+        export_layout.addWidget(self.btn_export)
+        action_layout.addLayout(export_layout)
+
+        layout.addWidget(action_bar)
 
         # スクロール可能なクリップリスト
         self.scroll_area = QScrollArea()
@@ -282,29 +348,6 @@ class ClipListWidget(QWidget):
 
         self.scroll_area.setWidget(self.scroll_content)
         layout.addWidget(self.scroll_area, stretch=1)
-
-        # 下部: エクスポートコントロール
-        export_layout = QHBoxLayout()
-
-        self.auto_split_check = QCheckBox("9:55で自動分割")
-        self.auto_split_check.setChecked(True)
-        self.auto_split_check.setToolTip("595秒超のクリップを自動分割")
-        export_layout.addWidget(self.auto_split_check)
-
-        export_layout.addStretch()
-
-        self.keep_all_check = QCheckBox("全てKeep")
-        self.keep_all_check.setChecked(True)
-        self.keep_all_check.setToolTip("全クリップの Keep/Drop を一括切り替え")
-        self.keep_all_check.stateChanged.connect(self._on_keep_all_toggled)
-        export_layout.addWidget(self.keep_all_check)
-
-        self.btn_export = QPushButton("書き出し")
-        self.btn_export.setObjectName("btn_export")
-        self.btn_export.clicked.connect(self._on_export)
-        export_layout.addWidget(self.btn_export)
-
-        layout.addLayout(export_layout)
 
     def set_job(self, job: VideoJob):
         """ジョブを設定してクリップ一覧を構築"""

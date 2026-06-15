@@ -95,6 +95,7 @@ class MainWindow(QMainWindow):
 
         # 左側: キュー
         self.queue_widget = QueueWidget(self.job_queue)
+        self.queue_widget.setMinimumWidth(220)
         splitter.addWidget(self.queue_widget)
 
         # 中央: プレビュー + タイムライン
@@ -113,9 +114,10 @@ class MainWindow(QMainWindow):
 
         # 右側: クリップリスト
         self.clip_list_widget = ClipListWidget()
+        self.clip_list_widget.setMinimumWidth(420)
         splitter.addWidget(self.clip_list_widget)
 
-        splitter.setSizes([200, 650, 350])
+        splitter.setSizes([230, 570, 400])
         main_layout.addWidget(splitter, stretch=1)
 
         # 下部: ログ（トグル可能）

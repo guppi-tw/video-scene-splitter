@@ -334,6 +334,10 @@ class TimelineWidget(QWidget):
         
         header_layout.addStretch()
 
+        label_detection = QLabel("検出")
+        label_detection.setStyleSheet("color: #9a9a9a; font-size: 10px; font-weight: bold;")
+        header_layout.addWidget(label_detection)
+
         # 検出設定: 閾値（感度）
         label_threshold = QLabel("感度:")
         label_threshold.setStyleSheet("color: #aaa; font-size: 11px;")
@@ -375,6 +379,10 @@ class TimelineWidget(QWidget):
         self.btn_auto_detect.clicked.connect(self._on_auto_detect_clicked)
         self.btn_auto_detect.setEnabled(False)
         header_layout.addWidget(self.btn_auto_detect)
+
+        label_boundary = QLabel("境界")
+        label_boundary.setStyleSheet("color: #9a9a9a; font-size: 10px; font-weight: bold; margin-left: 8px;")
+        header_layout.addWidget(label_boundary)
 
         # リセットボタン
         self.btn_reset = QPushButton("リセット")
