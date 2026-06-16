@@ -245,12 +245,7 @@ class ClipListWidget(QWidget):
         self.date_edit = QDateEdit()
         self.date_edit.setCalendarPopup(True)
         self.date_edit.setDate(QDate.currentDate())
-        self.date_check = QCheckBox()
-        self.date_check.setChecked(False)
-        self.date_check.setToolTip("日付を有効化")
-        self.date_check.stateChanged.connect(self._on_default_metadata_changed)
         self.date_edit.dateChanged.connect(self._on_default_metadata_changed)
-        date_layout.addWidget(self.date_check)
         date_layout.addWidget(self.date_edit)
         date_layout.addStretch()
         meta_layout.addLayout(date_layout)
@@ -356,17 +351,14 @@ class ClipListWidget(QWidget):
         # 前のジョブのメタデータ入力を引きずらないようリセット
         self.event_name_edit.blockSignals(True)
         self.date_edit.blockSignals(True)
-        self.date_check.blockSignals(True)
         self.event_name_edit.setText(job.default_event_name or "")
         if job.default_event_date:
             d = job.default_event_date
             self.date_edit.setDate(QDate(d.year, d.month, d.day))
-            self.date_check.setChecked(True)
         else:
-            self.date_check.setChecked(False)
+            self.date_edit.setDate(QDate.currentDate())
         self.event_name_edit.blockSignals(False)
         self.date_edit.blockSignals(False)
-        self.date_check.blockSignals(False)
 
         if not self._date_detecting:
             self.btn_date_detect.setEnabled(True)
@@ -387,11 +379,11 @@ class ClipListWidget(QWidget):
         self._clip_rows.clear()
         self._clip_rows_by_scene_index.clear()
         self.event_name_edit.blockSignals(True)
-        self.date_check.blockSignals(True)
+        self.date_edit.blockSignals(True)
         self.event_name_edit.clear()
-        self.date_check.setChecked(False)
+        self.date_edit.setDate(QDate.currentDate())
         self.event_name_edit.blockSignals(False)
-        self.date_check.blockSignals(False)
+        self.date_edit.blockSignals(False)
 
     def refresh_clips(self):
         """クリップ行を再構築"""
@@ -436,12 +428,9 @@ class ClipListWidget(QWidget):
         if not self.current_job:
             return
         self.current_job.default_event_name = self.event_name_edit.text().strip()
-        if self.date_check.isChecked():
-            from datetime import date
-            qdate = self.date_edit.date()
-            self.current_job.default_event_date = date(qdate.year(), qdate.month(), qdate.day())
-        else:
-            self.current_job.default_event_date = None
+        from datetime import date
+        qdate = self.date_edit.date()
+        self.current_job.default_event_date = date(qdate.year(), qdate.month(), qdate.day())
 
     def _on_apply_all(self):
         """メタデータを全クリップに適用"""
@@ -449,11 +438,9 @@ class ClipListWidget(QWidget):
             return
 
         name = self.event_name_edit.text().strip() or None
-        event_date = None
-        if self.date_check.isChecked():
-            from datetime import date
-            qdate = self.date_edit.date()
-            event_date = date(qdate.year(), qdate.month(), qdate.day())
+        from datetime import date
+        qdate = self.date_edit.date()
+        event_date = date(qdate.year(), qdate.month(), qdate.day())
 
         for scene in self.current_job.scenes:
             scene.event_name = name
