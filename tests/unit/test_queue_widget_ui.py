@@ -82,3 +82,36 @@ def test_queue_refresh_does_not_emit_selection_side_effects(tmp_path):
     assert emitted == []
 
     widget.close()
+
+
+def test_queue_actions_follow_selection_and_waiting_jobs(tmp_path):
+    _app()
+    queue = JobQueue()
+    widget = QueueWidget(queue)
+    widget.refresh()
+
+    assert widget.btn_remove.isEnabled() is False
+    assert widget.btn_detect_all.isEnabled() is False
+
+    waiting_path = tmp_path / "waiting.mp4"
+    waiting_path.touch()
+    waiting_job = queue.add_file(waiting_path)
+    widget.refresh()
+
+    assert widget.btn_detect_all.isEnabled() is True
+    assert widget.btn_detect_all.text() == "全部検出 (1)"
+
+    widget.select_job(waiting_job.id)
+    assert widget.btn_remove.isEnabled() is True
+
+    widget.set_detect_all_enabled(False)
+    assert widget.btn_detect_all.isEnabled() is False
+    widget.set_detect_all_enabled(True)
+    assert widget.btn_detect_all.isEnabled() is True
+
+    waiting_job.status = JobStatus.REVIEW
+    widget.refresh()
+    assert widget.btn_detect_all.isEnabled() is False
+    assert widget.btn_detect_all.text() == "全部検出"
+
+    widget.close()

@@ -64,6 +64,7 @@ class QueueWidget(QWidget):
     def __init__(self, job_queue: JobQueue):
         super().__init__()
         self.job_queue = job_queue
+        self._detect_all_available = True
         self.setAcceptDrops(True)
         self._setup_ui()
 
@@ -151,10 +152,34 @@ class QueueWidget(QWidget):
         self.drop_hint.setAlignment(Qt.AlignCenter)
         self.drop_hint.setStyleSheet("color: #666; font-size: 10px; padding: 4px;")
         layout.addWidget(self.drop_hint)
+        self._update_action_state()
 
     def set_detect_all_enabled(self, enabled: bool):
         """一括検出ボタンの有効状態を設定"""
-        self.btn_detect_all.setEnabled(enabled)
+        self._detect_all_available = enabled
+        self._update_action_state()
+
+    def _waiting_job_count(self) -> int:
+        return sum(
+            1 for job in self.job_queue.get_all_jobs()
+            if job.status == JobStatus.WAITING
+        )
+
+    def _update_action_state(self):
+        waiting_count = self._waiting_job_count()
+        self.btn_remove.setEnabled(self._selected_job_item() is not None)
+        self.btn_detect_all.setEnabled(self._detect_all_available and waiting_count > 0)
+        self.btn_detect_all.setText(
+            f"全部検出 ({waiting_count})" if waiting_count else "全部検出"
+        )
+        if not self._detect_all_available:
+            self.btn_detect_all.setToolTip("一括検出を実行中です")
+        elif waiting_count:
+            self.btn_detect_all.setToolTip(
+                f"待機中の動画 {waiting_count} 本をまとめてシーン検出します"
+            )
+        else:
+            self.btn_detect_all.setToolTip("待機中の動画がありません")
 
     def dragEnterEvent(self, event):
         if event.mimeData().hasUrls():
@@ -239,6 +264,7 @@ class QueueWidget(QWidget):
         item = self.tree.currentItem()
         if item is None:
             self._update_next_action(None)
+            self._update_action_state()
             return
         if item.parent() is None:
             job = self.job_queue.get_job_by_id(item.data(0, _ROLE_JOB_ID))
@@ -254,6 +280,7 @@ class QueueWidget(QWidget):
                 self.job_selected.emit(job)
                 if start is not None:
                     self.clip_preview_requested.emit(job, float(start))
+        self._update_action_state()
 
     def _update_next_action(self, job: VideoJob):
         if job is None:
@@ -311,6 +338,7 @@ class QueueWidget(QWidget):
             self.tree.blockSignals(was_blocked)
 
         self._update_next_action(self.get_selected_job())
+        self._update_action_state()
 
     def select_job(self, job_id: int):
         """指定IDのジョブを選択"""

@@ -992,6 +992,7 @@ class MainWindow(QMainWindow):
         self.log_widget.clear_log()
         self.log_widget.set_status(f"書き出し中: {job.filename}")
         self.log_widget.hide_progress()
+        self.clip_list_widget.set_exporting(True)
 
         # ワーカーとスレッドを作成
         self.export_thread = QThread()
@@ -1023,6 +1024,7 @@ class MainWindow(QMainWindow):
             self.export_thread.wait()
             self.export_thread = None
             self.export_worker = None
+        self.clip_list_widget.set_exporting(False)
 
         self.queue_widget.refresh()
 
@@ -1059,6 +1061,7 @@ class MainWindow(QMainWindow):
             self.export_thread.wait()
             self.export_thread = None
             self.export_worker = None
+        self.clip_list_widget.set_exporting(False)
 
         self.queue_widget.refresh()
 
@@ -1104,6 +1107,13 @@ class MainWindow(QMainWindow):
             QPushButton#btn_export:hover {
                 background-color: #3a5a8a;
             }
+            QPushButton#btn_split:disabled,
+            QPushButton#btn_export:disabled {
+                background-color: #2a2a2a;
+                color: #666;
+                border-color: #444;
+                font-weight: normal;
+            }
             QTableWidget {
                 background-color: #252526;
                 color: #d4d4d4;
@@ -1129,6 +1139,15 @@ class MainWindow(QMainWindow):
             }
             QLineEdit:focus {
                 border-color: #007acc;
+            }
+            QLineEdit:disabled,
+            QComboBox:disabled,
+            QDoubleSpinBox:disabled,
+            QSpinBox:disabled,
+            QDateEdit:disabled {
+                background-color: #2a2a2a;
+                color: #666;
+                border-color: #444;
             }
             QComboBox {
                 background-color: #333;
@@ -1158,6 +1177,9 @@ class MainWindow(QMainWindow):
             QCheckBox {
                 color: #d4d4d4;
                 spacing: 5px;
+            }
+            QCheckBox:disabled {
+                color: #666;
             }
             QLabel {
                 color: #d4d4d4;

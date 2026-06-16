@@ -469,6 +469,7 @@ class TimelineWidget(QWidget):
             self.btn_auto_detect.setText("自動検出")
             self.btn_auto_detect.setToolTip("映像の変化から分割候補を自動追加します")
             self.btn_auto_detect.setEnabled(self.duration > 0)
+        self.btn_reset.setEnabled(self.duration > 0 and not detecting)
         # 検出中は設定変更を受け付けない
         self.threshold_spin.setEnabled(not detecting)
         self.min_scene_spin.setEnabled(not detecting)

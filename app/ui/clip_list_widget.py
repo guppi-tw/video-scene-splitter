@@ -199,6 +199,7 @@ class ClipListWidget(QWidget):
         self.current_job: Optional[VideoJob] = None
         self._clip_rows: list[ClipRow] = []
         self._clip_rows_by_scene_index: dict[int, ClipRow] = {}
+        self._exporting = False
         self._setup_ui()
 
     @staticmethod
@@ -213,13 +214,13 @@ class ClipListWidget(QWidget):
         layout.setSpacing(5)
 
         # メタデータバー
-        meta_bar = QFrame()
-        meta_bar.setObjectName("clipMetaBar")
-        meta_bar.setStyleSheet(
+        self.meta_bar = QFrame()
+        self.meta_bar.setObjectName("clipMetaBar")
+        self.meta_bar.setStyleSheet(
             "QFrame#clipMetaBar { background-color: #242424; "
             "border: 1px solid #3a3a3a; border-radius: 4px; }"
         )
-        meta_layout = QVBoxLayout(meta_bar)
+        meta_layout = QVBoxLayout(self.meta_bar)
         meta_layout.setContentsMargins(8, 5, 8, 5)
         meta_layout.setSpacing(4)
 
@@ -250,16 +251,16 @@ class ClipListWidget(QWidget):
         date_layout.addStretch()
         meta_layout.addLayout(date_layout)
 
-        layout.addWidget(meta_bar)
+        layout.addWidget(self.meta_bar)
 
         # 操作バー
-        action_bar = QFrame()
-        action_bar.setObjectName("clipActionBar")
-        action_bar.setStyleSheet(
+        self.action_bar = QFrame()
+        self.action_bar.setObjectName("clipActionBar")
+        self.action_bar.setStyleSheet(
             "QFrame#clipActionBar { background-color: #202020; "
             "border: 1px solid #333; border-radius: 4px; }"
         )
-        action_layout = QVBoxLayout(action_bar)
+        action_layout = QVBoxLayout(self.action_bar)
         action_layout.setContentsMargins(8, 5, 8, 5)
         action_layout.setSpacing(4)
 
@@ -328,7 +329,7 @@ class ClipListWidget(QWidget):
         export_layout.addWidget(self.btn_export)
         action_layout.addLayout(export_layout)
 
-        layout.addWidget(action_bar)
+        layout.addWidget(self.action_bar)
 
         # スクロール可能なクリップリスト
         self.scroll_area = QScrollArea()
@@ -343,10 +344,50 @@ class ClipListWidget(QWidget):
 
         self.scroll_area.setWidget(self.scroll_content)
         layout.addWidget(self.scroll_area, stretch=1)
+        self._set_editor_visible(False)
+
+    def _set_editor_visible(self, visible: bool):
+        self.meta_bar.setVisible(visible)
+        self.action_bar.setVisible(visible)
+        self.scroll_area.setVisible(visible)
+
+    def _is_busy(self) -> bool:
+        return self._blank_detecting or self._date_detecting or self._exporting
+
+    def _has_editable_job(self) -> bool:
+        return self.current_job is not None and bool(self.current_job.scenes)
+
+    def _update_action_state(self):
+        has_job = self._has_editable_job()
+        busy = self._is_busy()
+        kept = any(scene.keep for scene in self.current_job.scenes) if has_job else False
+
+        self.event_name_edit.setEnabled(has_job and not busy)
+        self.date_edit.setEnabled(has_job and not busy)
+        self.btn_apply_all.setEnabled(has_job and not busy)
+        self.auto_split_check.setEnabled(has_job and not busy)
+        self.keep_all_check.setEnabled(has_job and not busy)
+        self.btn_export.setEnabled(has_job and kept and not busy)
+        self.btn_short_merge.setEnabled(
+            has_job and len(self.current_job.scenes) > 1 and not busy
+        )
+
+        if self._blank_detecting:
+            self.btn_blank_detect.setEnabled(True)
+            self.btn_date_detect.setEnabled(False)
+        elif self._date_detecting:
+            self.btn_blank_detect.setEnabled(False)
+            self.btn_date_detect.setEnabled(True)
+        else:
+            self.btn_blank_detect.setEnabled(has_job and not busy)
+            self.btn_date_detect.setEnabled(has_job and not busy)
+
+        self._update_merge_button()
 
     def set_job(self, job: VideoJob):
         """ジョブを設定してクリップ一覧を構築"""
         self.current_job = job
+        self._set_editor_visible(True)
 
         # 前のジョブのメタデータ入力を引きずらないようリセット
         self.event_name_edit.blockSignals(True)
@@ -360,19 +401,14 @@ class ClipListWidget(QWidget):
         self.event_name_edit.blockSignals(False)
         self.date_edit.blockSignals(False)
 
-        if not self._date_detecting:
-            self.btn_date_detect.setEnabled(True)
-        if not self._blank_detecting:
-            self.btn_blank_detect.setEnabled(True)
-        self.btn_short_merge.setEnabled(True)
         self.refresh_clips()
+        self._update_action_state()
 
     def clear(self):
         """クリップ一覧を空にする"""
         self.current_job = None
-        self.btn_date_detect.setEnabled(False)
-        self.btn_blank_detect.setEnabled(False)
-        self.btn_short_merge.setEnabled(False)
+        self._exporting = False
+        self._set_editor_visible(False)
         for row in self._clip_rows:
             row.setParent(None)
             row.deleteLater()
@@ -384,6 +420,7 @@ class ClipListWidget(QWidget):
         self.date_edit.setDate(QDate.currentDate())
         self.event_name_edit.blockSignals(False)
         self.date_edit.blockSignals(False)
+        self._update_action_state()
 
     def refresh_clips(self):
         """クリップ行を再構築"""
@@ -415,7 +452,7 @@ class ClipListWidget(QWidget):
 
         self.scroll_layout.addStretch()
         self._sync_keep_all_check()
-        self._update_merge_button()
+        self._update_action_state()
 
     def update_thumbnail(self, scene_index: int, path: str):
         """特定クリップのサムネイルを更新"""
@@ -447,10 +484,12 @@ class ClipListWidget(QWidget):
             scene.event_date = event_date
 
         self.refresh_clips()
+        self._update_action_state()
 
     def _on_individual_keep_changed(self, scene_index: int, keep: bool):
         """個別クリップのKeep変更時に全体チェックボックスを同期"""
         self._sync_keep_all_check()
+        self._update_action_state()
 
     def _selected_scene_indexes(self) -> list[int]:
         """選択中のシーン番号を昇順で返す"""
@@ -468,6 +507,11 @@ class ClipListWidget(QWidget):
 
         if not selected:
             self.merge_hint_label.setText("チェックで結合対象を選択")
+            self.btn_merge.setEnabled(False)
+            return
+
+        if self._is_busy():
+            self.merge_hint_label.setText("検出中は結合できません")
             self.btn_merge.setEnabled(False)
             return
 
@@ -505,13 +549,12 @@ class ClipListWidget(QWidget):
         if detecting:
             self.btn_blank_detect.setText("中止")
             self.btn_blank_detect.setToolTip("つなぎ目検出を中止します")
-            self.btn_blank_detect.setEnabled(True)
         else:
             self.btn_blank_detect.setText("つなぎ目検出")
             self.btn_blank_detect.setToolTip(
                 "単色（青/黒/白）のつなぎ目を検出して除外提案を出します"
             )
-            self.btn_blank_detect.setEnabled(self.current_job is not None)
+        self._update_action_state()
 
     def _on_date_detect_clicked(self):
         if self._date_detecting:
@@ -525,14 +568,18 @@ class ClipListWidget(QWidget):
         if detecting:
             self.btn_date_detect.setText("中止")
             self.btn_date_detect.setToolTip("日付検出を中止します")
-            self.btn_date_detect.setEnabled(True)
         else:
             self.btn_date_detect.setText("日付検出")
             self.btn_date_detect.setToolTip(
                 "映像に焼き込まれた日付スタンプ（昔のビデオカメラの日付表示など）を\n"
                 "OCRで読み取り、各クリップの日付に設定します"
             )
-            self.btn_date_detect.setEnabled(self.current_job is not None)
+        self._update_action_state()
+
+    def set_exporting(self, exporting: bool):
+        """書き出し中は編集・後処理系の操作を止める"""
+        self._exporting = exporting
+        self._update_action_state()
 
     def _sync_keep_all_check(self):
         """全クリップのKeep状態に応じてチェックボックスを更新"""
@@ -551,6 +598,7 @@ class ClipListWidget(QWidget):
         for scene in self.current_job.scenes:
             scene.keep = keep
         self.refresh_clips()
+        self._update_action_state()
 
     def _on_export(self):
         """書き出し"""
