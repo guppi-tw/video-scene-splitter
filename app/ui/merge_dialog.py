@@ -37,16 +37,9 @@ class MergeProposalDialog(QDialog):
         layout = QVBoxLayout(self)
         layout.setSpacing(10)
 
-        intro = QLabel(
-            "短いシーンを隣のシーンに統合できます。\n"
-            "秒数を変えると結合後のシーン数がプレビューされます。"
-        )
-        intro.setWordWrap(True)
-        layout.addWidget(intro)
-
         # 秒数指定
         spin_layout = QHBoxLayout()
-        spin_layout.addWidget(QLabel("この長さ未満のシーンを統合:"))
+        spin_layout.addWidget(QLabel("結合する長さ:"))
         self.min_seconds_spin = QDoubleSpinBox()
         # 上限はクリップ自動分割の閾値(595秒)に合わせて10分まで許容する
         self.min_seconds_spin.setRange(0.5, 600.0)
@@ -68,7 +61,7 @@ class MergeProposalDialog(QDialog):
         button_layout = QHBoxLayout()
         button_layout.addStretch()
 
-        self.btn_skip = QPushButton("そのまま")
+        self.btn_skip = QPushButton("キャンセル")
         self.btn_skip.clicked.connect(self.reject)
         button_layout.addWidget(self.btn_skip)
 

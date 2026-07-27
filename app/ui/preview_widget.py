@@ -37,7 +37,7 @@ class PreviewWidget(QWidget):
         
         # ビデオ表示エリア
         self.video_widget = QVideoWidget()
-        self.video_widget.setMinimumSize(320, 180)
+        self.video_widget.setMinimumSize(260, 146)
         self.video_widget.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         self.video_widget.setStyleSheet("background-color: #000;")
         layout.addWidget(self.video_widget, stretch=1)
@@ -69,7 +69,7 @@ class PreviewWidget(QWidget):
         controls_layout.addSpacing(10)
 
         # ここで分割ボタン
-        self.btn_split = QPushButton("ここで分割 [S]")
+        self.btn_split = QPushButton("分割 [S]")
         self.btn_split.setObjectName("btn_split")
         self.btn_split.setToolTip("現在の再生位置に分割点を追加 (S)")
         self.btn_split.clicked.connect(self._on_split_clicked)
@@ -80,7 +80,7 @@ class PreviewWidget(QWidget):
 
         # 時間表示
         self.time_label = QLabel("00:00.0 / 00:00.0")
-        self.time_label.setMinimumWidth(140)
+        self.time_label.setMinimumWidth(100)
         controls_layout.addWidget(self.time_label)
 
         controls_layout.addStretch()
@@ -98,7 +98,7 @@ class PreviewWidget(QWidget):
         self.volume_slider.setRange(0, 100)
         self.volume_slider.setValue(70)
         self.volume_slider.setAccessibleName("音量")
-        self.volume_slider.setFixedWidth(80)
+        self.volume_slider.setFixedWidth(60)
         self.volume_slider.valueChanged.connect(self._on_volume_changed)
         controls_layout.addWidget(self.volume_slider)
 
@@ -142,18 +142,14 @@ class PreviewWidget(QWidget):
         self.btn_step_forward.setToolTip("選択した幅だけ進む（→）")
         controls2_layout.addWidget(self.btn_step_forward)
 
-        controls2_layout.addSpacing(20)
-
-        # 再生速度
-        speed_label = QLabel("速度:")
-        speed_label.setFixedHeight(24)
-        controls2_layout.addWidget(speed_label)
+        controls2_layout.addSpacing(12)
 
         self.speed_combo = QComboBox()
         self.speed_combo.setFixedHeight(24)
         self._speed_values = [0.25, 0.5, 0.75, 1.0, 1.25, 1.5, 2.0]
         for v in self._speed_values:
-            self.speed_combo.addItem(f"x{v:.2f}" if v != int(v) else f"x{v:.1f}")
+            value = f"{v:.2f}" if v != int(v) else f"{v:.1f}"
+            self.speed_combo.addItem(f"速度 {value}×")
         self.speed_combo.setCurrentIndex(3)  # x1.0デフォルト
         self.speed_combo.setAccessibleName("再生速度")
         self.speed_combo.currentIndexChanged.connect(self._on_speed_changed)

@@ -2,7 +2,8 @@
 ログ表示ウィジェット
 """
 from PySide6.QtWidgets import (
-    QWidget, QVBoxLayout, QTextEdit, QLabel, QProgressBar
+    QWidget, QVBoxLayout, QHBoxLayout, QTextEdit, QLabel, QProgressBar,
+    QPushButton,
 )
 
 
@@ -17,10 +18,19 @@ class LogWidget(QWidget):
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
         
-        # ステータス行
+        # ステータス行は常設し、詳細ログだけを必要時に開く。
+        status_layout = QHBoxLayout()
+        status_layout.setContentsMargins(0, 0, 0, 0)
         self.status_label = QLabel("待機中")
         self.status_label.setStyleSheet("font-weight: bold;")
-        layout.addWidget(self.status_label)
+        status_layout.addWidget(self.status_label)
+        status_layout.addStretch()
+        self.btn_toggle_details = QPushButton("詳細")
+        self.btn_toggle_details.setToolTip("処理ログを表示")
+        self.btn_toggle_details.setAccessibleName("処理ログの詳細を表示")
+        self.btn_toggle_details.clicked.connect(self._toggle_details)
+        status_layout.addWidget(self.btn_toggle_details)
+        layout.addLayout(status_layout)
 
         # プログレスバー
         self.progress_bar = QProgressBar()
@@ -49,7 +59,16 @@ class LogWidget(QWidget):
                 font-size: 12px;
             }
         """)
+        self.log_text.hide()
         layout.addWidget(self.log_text)
+
+    def _toggle_details(self):
+        visible = self.log_text.isHidden()
+        self.log_text.setVisible(visible)
+        self.btn_toggle_details.setText("閉じる" if visible else "詳細")
+        self.btn_toggle_details.setToolTip(
+            "処理ログを閉じる" if visible else "処理ログを表示"
+        )
     
     def set_status(self, status: str):
         """ステータスを設定"""

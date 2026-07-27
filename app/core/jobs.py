@@ -121,6 +121,7 @@ class VideoJob:
     scenes: list[Scene] = field(default_factory=list)
     clips: list[Clip] = field(default_factory=list)
     output_dir: Optional[Path] = None
+    auto_split_enabled: bool = True
     error_message: str = ""
     # 一括検出で分割だけ済み、開いたときに後処理（つなぎ目→結合→日付）が必要
     needs_post_process: bool = False
@@ -296,6 +297,14 @@ class JobQueue:
     def __init__(self):
         self._jobs: list[VideoJob] = []
         self._next_id = 1
+
+    @classmethod
+    def from_jobs(cls, jobs: List[VideoJob]) -> "JobQueue":
+        """保存済みジョブからキューを再構築する。"""
+        queue = cls()
+        queue._jobs = list(jobs)
+        queue._next_id = max((job.id for job in jobs), default=0) + 1
+        return queue
     
     def add_file(self, path: Path) -> Optional[VideoJob]:
         """単一ファイルをキューに追加"""

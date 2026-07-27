@@ -6,7 +6,8 @@ from dataclasses import dataclass
 
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QPushButton,
-    QLabel, QToolTip, QMenu, QDoubleSpinBox
+    QLabel, QToolTip, QMenu, QDoubleSpinBox, QFormLayout,
+    QWidgetAction, QMessageBox,
 )
 from PySide6.QtCore import Qt, Signal, QRect, QPoint
 from PySide6.QtGui import QPainter, QColor, QPen, QBrush, QMouseEvent, QFont
@@ -357,15 +358,10 @@ class TimelineWidget(QWidget):
         
         header_layout.addStretch()
 
-        label_detection = QLabel("検出")
-        label_detection.setStyleSheet("color: #9a9a9a; font-size: 10px; font-weight: bold;")
-        header_layout.addWidget(label_detection)
-
-        # 検出設定: 閾値（感度）
-        label_threshold = QLabel("感度:")
-        label_threshold.setStyleSheet("color: #aaa; font-size: 11px;")
-        header_layout.addWidget(label_threshold)
-
+        # 検出設定は低頻度のため、常設せずメニュー内にまとめる。
+        settings_panel = QWidget()
+        settings_layout = QFormLayout(settings_panel)
+        settings_layout.setContentsMargins(10, 8, 10, 8)
         self.threshold_spin = QDoubleSpinBox()
         self.threshold_spin.setRange(0.5, 10.0)
         self.threshold_spin.setSingleStep(0.5)
@@ -376,13 +372,6 @@ class TimelineWidget(QWidget):
             "シーン検出の閾値（デフォルト: 3.0）\n"
             "小さくすると敏感になり分割が増え、大きくすると分割が減ります"
         )
-        header_layout.addWidget(self.threshold_spin)
-
-        # 検出設定: 最小シーン長（秒）
-        label_min_len = QLabel("最小シーン長:")
-        label_min_len.setStyleSheet("color: #aaa; font-size: 11px;")
-        header_layout.addWidget(label_min_len)
-
         self.min_scene_spin = QDoubleSpinBox()
         self.min_scene_spin.setRange(0.0, 60.0)
         self.min_scene_spin.setSingleStep(0.5)
@@ -394,7 +383,8 @@ class TimelineWidget(QWidget):
             "これより短いシーンは検出時に隣のシーンへ統合されます\n"
             "細切れのクリップが大量にできる場合は値を大きくしてください（0で無効）"
         )
-        header_layout.addWidget(self.min_scene_spin)
+        settings_layout.addRow("感度", self.threshold_spin)
+        settings_layout.addRow("最小シーン長", self.min_scene_spin)
 
         # 自動検出ボタン（検出中は「中止」ボタンになる）
         self.btn_auto_detect = QPushButton("自動検出")
@@ -403,16 +393,39 @@ class TimelineWidget(QWidget):
         self.btn_auto_detect.setEnabled(False)
         header_layout.addWidget(self.btn_auto_detect)
 
-        label_boundary = QLabel("境界")
-        label_boundary.setStyleSheet("color: #9a9a9a; font-size: 10px; font-weight: bold; margin-left: 8px;")
-        header_layout.addWidget(label_boundary)
+        self.btn_settings = QPushButton("設定")
+        self.btn_settings.setToolTip("シーン検出の感度と最小シーン長")
+        settings_menu = QMenu(self.btn_settings)
+        settings_action = QWidgetAction(settings_menu)
+        settings_action.setDefaultWidget(settings_panel)
+        settings_menu.addAction(settings_action)
+        self.btn_settings.setMenu(settings_menu)
+        self.btn_settings.setEnabled(False)
+        header_layout.addWidget(self.btn_settings)
 
-        # リセットボタン
-        self.btn_reset = QPushButton("リセット")
-        self.btn_reset.setToolTip("全ての境界をクリアして元に戻す")
-        self.btn_reset.clicked.connect(self._on_reset)
+        self.btn_help = QPushButton("操作方法")
+        help_menu = QMenu(self.btn_help)
+        for text in (
+            "Space　再生／一時停止",
+            "S　現在位置で分割",
+            "← / →　選択した幅で移動",
+            "Undo　直前の編集を戻す",
+            "タイムラインをドラッグ　境界を調整",
+            "右クリック　境界を追加／削除",
+        ):
+            action = help_menu.addAction(text)
+            action.setEnabled(False)
+        self.btn_help.setMenu(help_menu)
+        header_layout.addWidget(self.btn_help)
+
+        boundary_menu_button = QPushButton("その他")
+        boundary_menu = QMenu(boundary_menu_button)
+        self.btn_reset = boundary_menu.addAction("境界をすべて削除")
+        self.btn_reset.setToolTip("動画全体を1つのクリップへ戻します")
+        self.btn_reset.triggered.connect(self._on_reset)
         self.btn_reset.setEnabled(False)
-        header_layout.addWidget(self.btn_reset)
+        boundary_menu_button.setMenu(boundary_menu)
+        header_layout.addWidget(boundary_menu_button)
         
         layout.addLayout(header_layout)
         
@@ -424,13 +437,6 @@ class TimelineWidget(QWidget):
         self.timeline_bar.position_clicked.connect(self._on_position_clicked)
         layout.addWidget(self.timeline_bar)
         
-        # 説明
-        help_label = QLabel(
-            "Space: 再生/停止  S: 分割  左右: コマ送り  Ctrl+Z: 戻す  |  "
-            "ドラッグ: 境界調整  右クリック: 追加/削除  クリック: シーク"
-        )
-        help_label.setStyleSheet("color: #888; font-size: 10px;")
-        layout.addWidget(help_label)
     
     def set_scenes(self, scene_start_times: List[float], duration: float):
         """シーン情報を設定"""
@@ -442,6 +448,7 @@ class TimelineWidget(QWidget):
 
         self.btn_reset.setEnabled(True)
         self.btn_auto_detect.setEnabled(True)
+        self.btn_settings.setEnabled(True)
 
     def clear(self):
         """タイムラインを空にする"""
@@ -452,6 +459,7 @@ class TimelineWidget(QWidget):
         self.timeline_bar.set_playhead(0.0)
         self.btn_reset.setEnabled(False)
         self.btn_auto_detect.setEnabled(False)
+        self.btn_settings.setEnabled(False)
 
     def add_boundary(self, time: float):
         """境界を追加する（公開API）"""
@@ -496,6 +504,7 @@ class TimelineWidget(QWidget):
         # 検出中は設定変更を受け付けない
         self.threshold_spin.setEnabled(not detecting)
         self.min_scene_spin.setEnabled(not detecting)
+        self.btn_settings.setEnabled(self.duration > 0 and not detecting)
 
     def _on_auto_detect_clicked(self):
         if self._detecting:
@@ -559,6 +568,16 @@ class TimelineWidget(QWidget):
         """全ての境界をクリアして動画全体を1シーンに戻す"""
         if self.duration <= 0:
             return
+        if len(self.scene_start_times) > 1:
+            reply = QMessageBox.question(
+                self,
+                "境界をすべて削除",
+                f"{len(self.scene_start_times)}個のクリップを1つに戻しますか？",
+                QMessageBox.Yes | QMessageBox.No,
+                QMessageBox.No,
+            )
+            if reply != QMessageBox.Yes:
+                return
         self.replace_boundaries([0.0])
     
     def _on_position_clicked(self, time: float):

@@ -40,16 +40,22 @@ class BlankCutDialog(QDialog):
         intro.setWordWrap(True)
         layout.addWidget(intro)
 
-        detail = QLabel(
+        self.btn_toggle_detail = QPushButton(f"{len(segments)}区間を確認")
+        self.btn_toggle_detail.setCheckable(True)
+        self.btn_toggle_detail.clicked.connect(self._toggle_detail)
+        layout.addWidget(self.btn_toggle_detail)
+
+        self.detail_label = QLabel(
             "、".join(
                 f"{format_seconds(s)}〜{format_seconds(e)}（{label}）"
                 for s, e, label in segments[:10]
             )
             + ("…" if len(segments) > 10 else "")
         )
-        detail.setWordWrap(True)
-        detail.setStyleSheet("color: #aaa; font-size: 11px;")
-        layout.addWidget(detail)
+        self.detail_label.setWordWrap(True)
+        self.detail_label.setStyleSheet("color: #aaa; font-size: 11px;")
+        self.detail_label.hide()
+        layout.addWidget(self.detail_label)
 
         button_layout = QHBoxLayout()
         button_layout.addStretch()
@@ -65,3 +71,9 @@ class BlankCutDialog(QDialog):
         button_layout.addWidget(self.btn_cut)
 
         layout.addLayout(button_layout)
+
+    def _toggle_detail(self, visible: bool):
+        self.detail_label.setVisible(visible)
+        self.btn_toggle_detail.setText(
+            "区間を閉じる" if visible else f"{len(self._segments)}区間を確認"
+        )

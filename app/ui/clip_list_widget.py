@@ -8,9 +8,9 @@ from typing import Optional
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit,
     QPushButton, QCheckBox, QScrollArea, QFrame, QDateEdit,
-    QFileDialog, QMessageBox, QSizePolicy
+    QFileDialog, QMessageBox, QSizePolicy, QMenu, QStackedLayout
 )
-from PySide6.QtCore import Qt, Signal, QDate
+from PySide6.QtCore import Qt, Signal, QDate, QEvent
 from PySide6.QtGui import QMouseEvent, QPixmap
 
 from app.core.jobs import VideoJob, Scene, Clip
@@ -68,13 +68,15 @@ class ClipRow(QFrame):
     filename_changed = Signal(int, str)  # scene_index, filename
     preview_requested = Signal(float)  # start_time
     selection_changed = Signal(int, bool)  # scene_index, selected
+    edit_started = Signal()
 
     def __init__(self, scene: Scene, job: VideoJob):
         super().__init__()
         self.scene = scene
         self.job = job
+        self._editing_enabled = True
         self.setFrameShape(QFrame.StyledPanel)
-        self.setFixedHeight(80)
+        self.setFixedHeight(70)
         self._setup_ui()
         self._update_style()
 
@@ -92,11 +94,12 @@ class ClipRow(QFrame):
             "結合対象として選択\n連続するシーンを選んで「選択を結合」を押すと1つにまとまります"
         )
         self.select_check.stateChanged.connect(self._on_select_changed)
+        self.select_check.hide()
         layout.addWidget(self.select_check)
 
         # サムネイル
         self.thumb_label = ClickableLabel()
-        self.thumb_label.setFixedSize(120, 68)
+        self.thumb_label.setFixedSize(88, 50)
         self.thumb_label.setAlignment(Qt.AlignCenter)
         self.thumb_label.setStyleSheet("background-color: #333; border: 1px solid #555;")
         self.thumb_label.setCursor(Qt.PointingHandCursor)
@@ -109,7 +112,7 @@ class ClipRow(QFrame):
         if self.scene.thumbnail_path and Path(self.scene.thumbnail_path).exists():
             self._set_thumbnail(self.scene.thumbnail_path)
         else:
-            self.thumb_label.setText("No Image")
+            self.thumb_label.setText("画像なし")
         layout.addWidget(self.thumb_label)
 
         # 情報エリア
@@ -117,90 +120,167 @@ class ClipRow(QFrame):
         info_layout.setSpacing(2)
 
         # クリップ番号 + 時間範囲 + 判定された日付
-        effective_date = self.scene.event_date or self.job.default_event_date
-        date_text = (
-            f"  📅 {effective_date.strftime('%Y-%m-%d')}"
-            if effective_date else "  📅 日付なし"
-        )
         time_text = (
             f"#{self.scene.index}  "
-            f"{self._format_time(self.scene.start_time)} - "
-            f"{self._format_time(self.scene.end_time)}  "
-            f"({self._format_time(self.scene.duration)})"
-            f"{date_text}"
+            f"{self._format_time(self.scene.start_time)}–"
+            f"{self._format_time(self.scene.end_time)}"
         )
         self.time_label = QLabel(time_text)
         self.time_label.setStyleSheet("font-size: 11px; color: #ccc;")
+        self.time_label.setMinimumWidth(80)
+        self.time_label.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
         info_layout.addWidget(self.time_label)
 
-        # ファイル名入力
+        # 生成名は通常テキスト表示。ダブルクリック時だけ入力欄へ切り替える。
+        self.filename_container = QWidget()
+        self.filename_stack = QStackedLayout(self.filename_container)
+        self.filename_stack.setContentsMargins(0, 0, 0, 0)
         self.filename_edit = QLineEdit()
         self.filename_edit.setMinimumWidth(80)
-        auto_name = self.job.get_clip_filename(Clip(
+        self.auto_name = self.job.get_clip_filename(Clip(
             index=self.scene.index,
             start_time=self.scene.start_time,
             end_time=self.scene.end_time,
             event_name=self.scene.event_name or self.job.default_event_name or '',
             event_date=self.scene.event_date or self.job.default_event_date,
         ))
-        self.filename_edit.setPlaceholderText(auto_name)
-        if self.scene.filename_override:
-            self.filename_edit.setText(self.scene.filename_override)
+        current_name = self.scene.filename_override or self.auto_name
+        self.filename_label = QLabel(current_name)
+        self.filename_label.setMinimumWidth(80)
+        self.filename_label.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
+        self.filename_label.setStyleSheet(
+            "QLabel { color: #b8b8b8; padding: 3px 4px; }"
+            "QLabel:focus { border: 1px solid #4f9ddf; border-radius: 2px; }"
+        )
+        self.filename_label.setToolTip(
+            f"{current_name}\nダブルクリックまたはF2でファイル名を変更"
+        )
+        self.filename_label.setAccessibleName(
+            f"シーン {self.scene.index} の出力ファイル名"
+        )
+        self.filename_label.setFocusPolicy(Qt.StrongFocus)
+        self.filename_label.installEventFilter(self)
+        self.filename_edit.setText(current_name)
+        self.filename_edit.setCursorPosition(0)
+        self.filename_edit.setReadOnly(True)
+        self.filename_edit.setToolTip(
+            f"{self.scene.filename_override or self.auto_name}\n"
+            "ダブルクリックまたはF2でファイル名を変更"
+        )
+        self.filename_edit.setAccessibleName(f"シーン {self.scene.index} の出力ファイル名")
+        self.filename_edit.installEventFilter(self)
         self.filename_edit.editingFinished.connect(self._on_filename_changed)
-        info_layout.addWidget(self.filename_edit)
+        self.filename_stack.addWidget(self.filename_label)
+        self.filename_stack.addWidget(self.filename_edit)
+        self.filename_stack.setCurrentWidget(self.filename_label)
+        info_layout.addWidget(self.filename_container)
 
         layout.addLayout(info_layout, stretch=1)
 
         # Keep / 要注意 を縦に並べてコンパクトに
-        check_layout = QVBoxLayout()
+        self.settings_widget = QWidget()
+        check_layout = QVBoxLayout(self.settings_widget)
+        check_layout.setContentsMargins(0, 0, 0, 0)
         check_layout.setSpacing(2)
 
-        # Keep/Dropチェックボックス
-        self.keep_check = QCheckBox("Keep")
-        self.keep_check.setMinimumWidth(58)
+        self.keep_check = QCheckBox("書き出す")
+        self.keep_check.setMinimumWidth(72)
         self.keep_check.setChecked(self.scene.keep)
         self.keep_check.stateChanged.connect(self._on_keep_changed)
         check_layout.addWidget(self.keep_check)
 
         # 要注意チェックボックス
-        self.sensitive_check = QCheckBox("要注意")
-        self.sensitive_check.setMinimumWidth(58)
-        self.sensitive_check.setToolTip("クラウド共有前に確認したいクリップを別フォルダへ書き出します")
+        self.sensitive_check = QCheckBox("別フォルダ")
+        self.sensitive_check.setMinimumWidth(72)
+        self.sensitive_check.setToolTip("要確認のクリップとして別フォルダへ書き出します")
+        self.sensitive_check.setAccessibleName("要確認として別フォルダへ書き出す")
         self.sensitive_check.setChecked(self.scene.is_sensitive)
         self.sensitive_check.setEnabled(self.scene.keep)
         self.sensitive_check.stateChanged.connect(self._on_sensitive_changed)
         check_layout.addWidget(self.sensitive_check)
 
-        layout.addLayout(check_layout)
+        layout.addWidget(self.settings_widget)
 
     def _set_thumbnail(self, path):
         pixmap = QPixmap(str(path))
         if not pixmap.isNull():
             self.thumb_label.setPixmap(
-                pixmap.scaled(120, 68, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+                pixmap.scaled(88, 50, Qt.KeepAspectRatio, Qt.SmoothTransformation)
             )
+
+    def eventFilter(self, watched, event):
+        activates_label = (
+            event.type() == QEvent.MouseButtonDblClick
+            or (
+                event.type() == QEvent.KeyPress
+                and event.key() in (Qt.Key_Return, Qt.Key_Enter, Qt.Key_F2)
+            )
+        )
+        if (
+            watched is self.filename_label
+            and activates_label
+            and self._editing_enabled
+            and self.scene.keep
+        ):
+            self._begin_filename_edit()
+            return True
+        return super().eventFilter(watched, event)
+
+    def _begin_filename_edit(self):
+        self.filename_edit.setReadOnly(False)
+        self.filename_stack.setCurrentWidget(self.filename_edit)
+        self.filename_edit.setFocus()
+        self.filename_edit.selectAll()
 
     def set_thumbnail(self, path: str):
         self._set_thumbnail(path)
 
     def _on_keep_changed(self, state):
         keep = state == Qt.Checked.value
+        if keep == self.scene.keep:
+            return
+        self.edit_started.emit()
         self.scene.keep = keep
         self._update_style()
         self.filename_edit.setEnabled(keep)
+        self.filename_label.setEnabled(keep)
         self.sensitive_check.setEnabled(keep)
         self.keep_changed.emit(self.scene.index, keep)
 
     def _on_sensitive_changed(self, state):
         is_sensitive = state == Qt.Checked.value
+        if is_sensitive == self.scene.is_sensitive:
+            return
+        self.edit_started.emit()
         self.scene.is_sensitive = is_sensitive
         self._update_style()
         self.sensitive_changed.emit(self.scene.index, is_sensitive)
 
     def _on_filename_changed(self):
         text = self.filename_edit.text().strip()
-        self.scene.filename_override = text if text else None
+        override = text if text and text != self.auto_name else None
+        if override == self.scene.filename_override:
+            self.filename_edit.setText(override or self.auto_name)
+            self.filename_edit.setCursorPosition(0)
+            self.filename_edit.setReadOnly(True)
+            self.filename_stack.setCurrentWidget(self.filename_label)
+            return
+        self.edit_started.emit()
+        self.scene.filename_override = override
+        self.filename_edit.setText(override or self.auto_name)
+        self.filename_edit.setCursorPosition(0)
+        self.filename_label.setText(override or self.auto_name)
+        self.filename_label.setToolTip(
+            f"{override or self.auto_name}\n"
+            "ダブルクリックまたはF2でファイル名を変更"
+        )
+        self.filename_edit.setToolTip(
+            f"{override or self.auto_name}\n"
+            "ダブルクリックまたはF2でファイル名を変更"
+        )
+        self.filename_edit.setReadOnly(True)
         self.filename_changed.emit(self.scene.index, text)
+        self.filename_stack.setCurrentWidget(self.filename_label)
 
     def _on_select_changed(self, state):
         self.selection_changed.emit(self.scene.index, state == Qt.Checked.value)
@@ -210,10 +290,20 @@ class ClipRow(QFrame):
 
     def set_editing_enabled(self, enabled: bool):
         """処理中は行内の編集操作もまとめて無効にする"""
+        self._editing_enabled = enabled
         self.select_check.setEnabled(enabled)
         self.keep_check.setEnabled(enabled)
         self.filename_edit.setEnabled(enabled and self.scene.keep)
+        self.filename_label.setEnabled(enabled and self.scene.keep)
+        self.filename_edit.setReadOnly(True)
+        self.filename_stack.setCurrentWidget(self.filename_label)
         self.sensitive_check.setEnabled(enabled and self.scene.keep)
+
+    def set_merge_mode(self, enabled: bool):
+        self.select_check.setVisible(enabled)
+        self.settings_widget.setVisible(not enabled)
+        if not enabled:
+            self.select_check.setChecked(False)
 
     def _update_style(self):
         if self.scene.keep and self.scene.is_sensitive:
@@ -232,6 +322,7 @@ class ClipListWidget(QWidget):
     """クリップ一覧 + メタデータ + 書き出しコントロール"""
 
     export_requested = Signal(object, object, bool)  # VideoJob, output_dir, auto_split
+    export_cancel_requested = Signal()
     clip_preview_requested = Signal(float)  # start_time
     merge_requested = Signal(list)  # 結合対象のシーン番号リスト（昇順・連続）
     short_merge_requested = Signal()  # 短いシーンの結合提案を手動で出す
@@ -239,6 +330,8 @@ class ClipListWidget(QWidget):
     blank_detect_cancel_requested = Signal()
     date_detect_requested = Signal()
     date_detect_cancel_requested = Signal()
+    edit_started = Signal()
+    job_changed = Signal()
 
     def __init__(self):
         super().__init__()
@@ -246,13 +339,9 @@ class ClipListWidget(QWidget):
         self._clip_rows: list[ClipRow] = []
         self._clip_rows_by_scene_index: dict[int, ClipRow] = {}
         self._exporting = False
+        self._export_cancelling = False
+        self._merge_mode = False
         self._setup_ui()
-
-    @staticmethod
-    def _section_label(text: str) -> QLabel:
-        label = QLabel(text)
-        label.setStyleSheet("color: #9a9a9a; font-size: 10px; font-weight: bold;")
-        return label
 
     def _setup_ui(self):
         layout = QVBoxLayout(self)
@@ -272,15 +361,17 @@ class ClipListWidget(QWidget):
 
         name_layout = QHBoxLayout()
         name_layout.setSpacing(6)
-        name_layout.addWidget(self._section_label("既定値"))
-        name_layout.addWidget(QLabel("ファイル名:"))
+        self.output_name_label = QLabel("出力名")
+        name_layout.addWidget(self.output_name_label)
         self.event_name_edit = QLineEdit()
         self.event_name_edit.setMinimumWidth(90)
-        self.event_name_edit.setPlaceholderText("出力ファイル名（未指定なら元ファイル名）")
+        self.event_name_edit.setPlaceholderText("未指定なら元の動画名")
+        self.event_name_edit.setAccessibleName("出力名")
         self.event_name_edit.editingFinished.connect(self._on_default_metadata_changed)
+        self.output_name_label.setBuddy(self.event_name_edit)
         name_layout.addWidget(self.event_name_edit, stretch=1)
 
-        self.btn_apply_all = QPushButton("全体に適用")
+        self.btn_apply_all = QPushButton("全クリップへ反映")
         self.btn_apply_all.setToolTip("ファイル名と日付を全クリップに適用")
         self.btn_apply_all.clicked.connect(self._on_apply_all)
         name_layout.addWidget(self.btn_apply_all)
@@ -288,13 +379,18 @@ class ClipListWidget(QWidget):
 
         date_layout = QHBoxLayout()
         date_layout.setSpacing(6)
-        date_layout.addWidget(self._section_label("日付"))
+        self.date_label = QLabel("日付")
+        date_layout.addWidget(self.date_label)
         self.date_edit = OptionalDateEdit()
         self.date_edit.setCalendarPopup(True)
         self.date_edit.dateChanged.connect(self._on_default_metadata_changed)
+        self.date_edit.dateChanged.connect(self._sync_date_clear)
+        self.date_label.setBuddy(self.date_edit)
         date_layout.addWidget(self.date_edit)
-        self.btn_clear_date = QPushButton("未設定に戻す")
-        self.btn_clear_date.setToolTip("既定の日付を未設定に戻します")
+        self.btn_clear_date = QPushButton("クリア")
+        self.btn_clear_date.setFixedWidth(52)
+        self.btn_clear_date.setToolTip("日付をクリア")
+        self.btn_clear_date.setAccessibleName("日付をクリア")
         self.btn_clear_date.clicked.connect(
             lambda: self.date_edit.set_optional_date(None)
         )
@@ -316,31 +412,37 @@ class ClipListWidget(QWidget):
         action_layout.setSpacing(4)
 
         self._blank_detecting = False
-        self.btn_blank_detect = QPushButton("つなぎ目検出")
+        self.btn_postprocess = QPushButton("自動補正")
+        post_menu = QMenu(self.btn_postprocess)
+        self.btn_blank_detect = post_menu.addAction("つなぎ目を検出")
         self.btn_blank_detect.setToolTip("単色（青/黒/白）のつなぎ目を検出して除外提案を出します")
         self.btn_blank_detect.setEnabled(False)
-        self.btn_blank_detect.clicked.connect(self._on_blank_detect_clicked)
+        self.btn_blank_detect.triggered.connect(self._on_blank_detect_clicked)
 
-        self.btn_short_merge = QPushButton("短いシーンを結合")
+        self.btn_short_merge = post_menu.addAction("短いシーンを結合")
         self.btn_short_merge.setToolTip("短いシーンをまとめる結合提案をもう一度出します")
         self.btn_short_merge.setEnabled(False)
-        self.btn_short_merge.clicked.connect(self.short_merge_requested.emit)
+        self.btn_short_merge.triggered.connect(
+            lambda _checked=False: self.short_merge_requested.emit()
+        )
 
         self._date_detecting = False
-        self.btn_date_detect = QPushButton("日付検出")
+        self.btn_date_detect = post_menu.addAction("日付を検出")
         self.btn_date_detect.setToolTip(
             "映像に焼き込まれた日付スタンプ（昔のビデオカメラの日付表示など）を\n"
             "OCRで読み取り、各クリップの日付に設定します"
         )
         self.btn_date_detect.setEnabled(False)
-        self.btn_date_detect.clicked.connect(self._on_date_detect_clicked)
+        self.btn_date_detect.triggered.connect(self._on_date_detect_clicked)
+        self.btn_postprocess.setMenu(post_menu)
 
         post_layout = QHBoxLayout()
         post_layout.setSpacing(6)
-        post_layout.addWidget(self._section_label("後処理"))
-        post_layout.addWidget(self.btn_blank_detect)
-        post_layout.addWidget(self.btn_short_merge)
-        post_layout.addWidget(self.btn_date_detect)
+        post_layout.addWidget(self.btn_postprocess)
+        self.btn_merge_mode = QPushButton("クリップを結合")
+        self.btn_merge_mode.setCheckable(True)
+        self.btn_merge_mode.clicked.connect(self._toggle_merge_mode)
+        post_layout.addWidget(self.btn_merge_mode)
         post_layout.addStretch()
         action_layout.addLayout(post_layout)
 
@@ -351,20 +453,23 @@ class ClipListWidget(QWidget):
         self.btn_merge.setEnabled(False)
         self.btn_merge.clicked.connect(self._on_merge)
 
-        merge_layout = QHBoxLayout()
+        self.merge_bar = QFrame()
+        merge_layout = QHBoxLayout(self.merge_bar)
+        merge_layout.setContentsMargins(0, 0, 0, 0)
         merge_layout.setSpacing(6)
-        merge_layout.addWidget(self._section_label("結合"))
         merge_layout.addWidget(self.merge_hint_label, stretch=1)
         merge_layout.addWidget(self.btn_merge)
-        action_layout.addLayout(merge_layout)
+        action_layout.addWidget(self.merge_bar)
+        self.merge_bar.hide()
 
         self.auto_split_check = QCheckBox("9:55で自動分割")
         self.auto_split_check.setChecked(True)
         self.auto_split_check.setToolTip("595秒超のクリップを自動分割")
+        self.auto_split_check.stateChanged.connect(self._on_auto_split_toggled)
 
-        self.keep_all_check = QCheckBox("全てKeep")
+        self.keep_all_check = QCheckBox("すべて書き出す")
         self.keep_all_check.setChecked(True)
-        self.keep_all_check.setToolTip("全クリップの Keep/Drop を一括切り替え")
+        self.keep_all_check.setToolTip("全クリップの書き出し対象を一括切り替え")
         self.keep_all_check.stateChanged.connect(self._on_keep_all_toggled)
 
         self.btn_export = QPushButton("書き出し")
@@ -373,7 +478,6 @@ class ClipListWidget(QWidget):
 
         export_layout = QHBoxLayout()
         export_layout.setSpacing(6)
-        export_layout.addWidget(self._section_label("出力"))
         export_layout.addWidget(self.auto_split_check)
         export_layout.addWidget(self.keep_all_check)
         export_layout.addStretch()
@@ -397,6 +501,9 @@ class ClipListWidget(QWidget):
         layout.addWidget(self.scroll_area, stretch=1)
         self._set_editor_visible(False)
 
+    def _sync_date_clear(self, *_args):
+        self.btn_clear_date.setVisible(self.date_edit.optional_date() is not None)
+
     def _set_editor_visible(self, visible: bool):
         self.meta_bar.setVisible(visible)
         self.action_bar.setVisible(visible)
@@ -412,6 +519,7 @@ class ClipListWidget(QWidget):
         has_job = self._has_editable_job()
         busy = self._is_busy()
         kept = any(scene.keep for scene in self.current_job.scenes) if has_job else False
+        scene_count = len(self.current_job.scenes) if has_job else 0
 
         self.event_name_edit.setEnabled(has_job and not busy)
         self.date_edit.setEnabled(has_job and not busy)
@@ -419,10 +527,20 @@ class ClipListWidget(QWidget):
         self.btn_apply_all.setEnabled(has_job and not busy)
         self.auto_split_check.setEnabled(has_job and not busy)
         self.keep_all_check.setEnabled(has_job and not busy)
-        self.btn_export.setEnabled(has_job and kept and not busy)
-        self.btn_short_merge.setEnabled(
-            has_job and len(self.current_job.scenes) > 1 and not busy
+        self.btn_merge_mode.setEnabled(has_job and scene_count > 1 and not busy)
+        self.btn_postprocess.setEnabled(
+            has_job
+            and (
+                not busy
+                or self._blank_detecting
+                or self._date_detecting
+            )
         )
+        if self._exporting:
+            self.btn_export.setEnabled(not self._export_cancelling)
+        else:
+            self.btn_export.setEnabled(has_job and kept and not busy)
+        self.btn_short_merge.setEnabled(has_job and scene_count > 1 and not busy)
 
         if self._blank_detecting:
             self.btn_blank_detect.setEnabled(True)
@@ -442,6 +560,10 @@ class ClipListWidget(QWidget):
     def set_job(self, job: VideoJob):
         """ジョブを設定してクリップ一覧を構築"""
         self.current_job = job
+        self._merge_mode = False
+        self.btn_merge_mode.setChecked(False)
+        self.btn_merge_mode.setText("クリップを結合")
+        self.merge_bar.hide()
         self._set_editor_visible(True)
 
         # 前のジョブのメタデータ入力を引きずらないようリセット
@@ -449,8 +571,12 @@ class ClipListWidget(QWidget):
         self.date_edit.blockSignals(True)
         self.event_name_edit.setText(job.default_event_name or "")
         self.date_edit.set_optional_date(job.default_event_date)
+        self.auto_split_check.blockSignals(True)
+        self.auto_split_check.setChecked(job.auto_split_enabled)
+        self.auto_split_check.blockSignals(False)
         self.event_name_edit.blockSignals(False)
         self.date_edit.blockSignals(False)
+        self._sync_date_clear()
 
         self.refresh_clips()
         self._update_action_state()
@@ -459,6 +585,9 @@ class ClipListWidget(QWidget):
         """クリップ一覧を空にする"""
         self.current_job = None
         self._exporting = False
+        self._merge_mode = False
+        self.btn_merge_mode.setChecked(False)
+        self.merge_bar.hide()
         self._set_editor_visible(False)
         for row in self._clip_rows:
             row.setParent(None)
@@ -471,6 +600,7 @@ class ClipListWidget(QWidget):
         self.date_edit.set_optional_date(None)
         self.event_name_edit.blockSignals(False)
         self.date_edit.blockSignals(False)
+        self._sync_date_clear()
         self._update_action_state()
 
     def refresh_clips(self):
@@ -495,8 +625,12 @@ class ClipListWidget(QWidget):
         for scene in self.current_job.scenes:
             row = ClipRow(scene, self.current_job)
             row.preview_requested.connect(self.clip_preview_requested.emit)
+            row.edit_started.connect(self.edit_started.emit)
             row.keep_changed.connect(self._on_individual_keep_changed)
+            row.sensitive_changed.connect(self._on_individual_setting_changed)
+            row.filename_changed.connect(self._on_individual_setting_changed)
             row.selection_changed.connect(self._on_selection_changed)
+            row.set_merge_mode(self._merge_mode)
             self._clip_rows.append(row)
             self._clip_rows_by_scene_index[scene.index] = row
             self.scroll_layout.addWidget(row)
@@ -504,6 +638,14 @@ class ClipListWidget(QWidget):
         self.scroll_layout.addStretch()
         self._sync_keep_all_check()
         self._update_action_state()
+
+    def _toggle_merge_mode(self, enabled: bool):
+        self._merge_mode = enabled
+        self.btn_merge_mode.setText("結合を終了" if enabled else "クリップを結合")
+        self.merge_bar.setVisible(enabled)
+        for row in self._clip_rows:
+            row.set_merge_mode(enabled)
+        self._update_merge_button()
 
     def update_thumbnail(self, scene_index: int, path: str):
         """特定クリップのサムネイルを更新"""
@@ -515,8 +657,17 @@ class ClipListWidget(QWidget):
         """デフォルトメタデータが変更された"""
         if not self.current_job:
             return
-        self.current_job.default_event_name = self.event_name_edit.text().strip()
-        self.current_job.default_event_date = self.date_edit.optional_date()
+        name = self.event_name_edit.text().strip()
+        event_date = self.date_edit.optional_date()
+        if (
+            name == self.current_job.default_event_name
+            and event_date == self.current_job.default_event_date
+        ):
+            return
+        self.edit_started.emit()
+        self.current_job.default_event_name = name
+        self.current_job.default_event_date = event_date
+        self.job_changed.emit()
 
     def _on_apply_all(self):
         """メタデータを全クリップに適用"""
@@ -525,6 +676,12 @@ class ClipListWidget(QWidget):
 
         name = self.event_name_edit.text().strip() or None
         event_date = self.date_edit.optional_date()
+        if all(
+            scene.event_name == name and scene.event_date == event_date
+            for scene in self.current_job.scenes
+        ):
+            return
+        self.edit_started.emit()
 
         for scene in self.current_job.scenes:
             scene.event_name = name
@@ -532,11 +689,17 @@ class ClipListWidget(QWidget):
 
         self.refresh_clips()
         self._update_action_state()
+        self.job_changed.emit()
 
     def _on_individual_keep_changed(self, scene_index: int, keep: bool):
         """個別クリップのKeep変更時に全体チェックボックスを同期"""
         self._sync_keep_all_check()
         self._update_action_state()
+        self.job_changed.emit()
+
+    def _on_individual_setting_changed(self, *_args):
+        self._update_action_state()
+        self.job_changed.emit()
 
     def _selected_scene_indexes(self) -> list[int]:
         """選択中のシーン番号を昇順で返す"""
@@ -610,6 +773,8 @@ class ClipListWidget(QWidget):
         if not self._selected_scenes_are_merge_compatible(selected):
             return
         self.merge_requested.emit(selected)
+        self.btn_merge_mode.setChecked(False)
+        self._toggle_merge_mode(False)
 
     def _on_blank_detect_clicked(self):
         if self._blank_detecting:
@@ -621,10 +786,10 @@ class ClipListWidget(QWidget):
         """つなぎ目検出中の表示状態を切り替える（検出中はボタンが「中止」になる）"""
         self._blank_detecting = detecting
         if detecting:
-            self.btn_blank_detect.setText("中止")
+            self.btn_blank_detect.setText("つなぎ目検出を中止")
             self.btn_blank_detect.setToolTip("つなぎ目検出を中止します")
         else:
-            self.btn_blank_detect.setText("つなぎ目検出")
+            self.btn_blank_detect.setText("つなぎ目を検出")
             self.btn_blank_detect.setToolTip(
                 "単色（青/黒/白）のつなぎ目を検出して除外提案を出します"
             )
@@ -640,10 +805,10 @@ class ClipListWidget(QWidget):
         """日付検出中の表示状態を切り替える（検出中はボタンが「中止」になる）"""
         self._date_detecting = detecting
         if detecting:
-            self.btn_date_detect.setText("中止")
+            self.btn_date_detect.setText("日付検出を中止")
             self.btn_date_detect.setToolTip("日付検出を中止します")
         else:
-            self.btn_date_detect.setText("日付検出")
+            self.btn_date_detect.setText("日付を検出")
             self.btn_date_detect.setToolTip(
                 "映像に焼き込まれた日付スタンプ（昔のビデオカメラの日付表示など）を\n"
                 "OCRで読み取り、各クリップの日付に設定します"
@@ -653,6 +818,13 @@ class ClipListWidget(QWidget):
     def set_exporting(self, exporting: bool):
         """書き出し中は編集・後処理系の操作を止める"""
         self._exporting = exporting
+        self._export_cancelling = False
+        self.btn_export.setText("書き出しを中止" if exporting else "書き出し")
+        self._update_action_state()
+
+    def set_export_cancelling(self):
+        self._export_cancelling = True
+        self.btn_export.setText("中止しています…")
         self._update_action_state()
 
     def _sync_keep_all_check(self):
@@ -669,19 +841,36 @@ class ClipListWidget(QWidget):
         if not self.current_job:
             return
         keep = state == Qt.Checked.value
+        if all(scene.keep == keep for scene in self.current_job.scenes):
+            return
+        self.edit_started.emit()
         for scene in self.current_job.scenes:
             scene.keep = keep
         self.refresh_clips()
         self._update_action_state()
+        self.job_changed.emit()
+
+    def _on_auto_split_toggled(self, state):
+        if not self.current_job:
+            return
+        enabled = state == Qt.Checked.value
+        if enabled == self.current_job.auto_split_enabled:
+            return
+        self.edit_started.emit()
+        self.current_job.auto_split_enabled = enabled
+        self.job_changed.emit()
 
     def _on_export(self):
         """書き出し"""
+        if self._exporting:
+            self.export_cancel_requested.emit()
+            return
         if not self.current_job:
             return
 
         kept = [s for s in self.current_job.scenes if s.keep]
         if not kept:
-            QMessageBox.warning(self, "警告", "Keep対象のクリップがありません")
+            QMessageBox.warning(self, "警告", "書き出し対象のクリップがありません")
             return
         sensitive_count = sum(1 for s in kept if s.is_sensitive)
 
@@ -692,10 +881,10 @@ class ClipListWidget(QWidget):
         reply = QMessageBox.question(
             self,
             "書き出し確認",
-            f"Keepクリップ: {len(kept)}個\n"
-            f"要注意クリップ: {sensitive_count}個\n"
+            f"書き出し対象: {len(kept)}個\n"
+            f"別フォルダへ出力: {sensitive_count}個\n"
             f"出力先: {output_dir}\n\n"
-            f"要注意クリップは sensitive フォルダへ分けて出力されます。\n"
+            f"要確認クリップは sensitive フォルダへ分けて出力されます。\n"
             f"書き出しを開始しますか？",
             QMessageBox.Yes | QMessageBox.No
         )

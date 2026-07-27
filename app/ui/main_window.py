@@ -9,9 +9,9 @@ from PySide6.QtWidgets import (
     QMainWindow, QWidget, QVBoxLayout,
     QSplitter, QPushButton, QMessageBox, QApplication,
     QAbstractButton, QAbstractItemView, QAbstractSlider,
-    QAbstractSpinBox, QComboBox, QLineEdit, QTextEdit
+    QAbstractSpinBox, QComboBox, QLineEdit, QTextEdit, QStackedLayout
 )
-from PySide6.QtCore import Qt, QThread
+from PySide6.QtCore import Qt, QThread, QTimer
 from PySide6.QtGui import QShortcut, QKeySequence
 
 from app.core import JobQueue, VideoJob, JobStatus, Scene
@@ -25,11 +25,14 @@ from app.ui.blank_dialog import BlankCutDialog
 from app.ui.batch_progress_dialog import BatchProgressDialog
 from app.ui.preview_widget import PreviewWidget
 from app.ui.timeline_widget import TimelineWidget
+from app.ui.drop_zone import VideoDropZone
 from app.ui.workers import (
     ThumbnailWorker, ExportWorker, SceneDetectionWorker,
     DateDetectionWorker, BlankDetectionWorker, BatchSceneDetectionWorker,
 )
 from app.core.scene_detector import absorb_short_scenes, merge_boundaries
+from app.core.session_store import SessionStore
+from app.core.edit_history import JobEditSnapshot
 
 
 def _boundaries_equal(left: List[float], right: List[float], tolerance: float = 1e-6) -> bool:
@@ -42,12 +45,29 @@ def _boundaries_equal(left: List[float], right: List[float], tolerance: float = 
 class MainWindow(QMainWindow):
     """メインウィンドウ"""
 
-    def __init__(self):
+    def __init__(
+        self,
+        session_store: Optional[SessionStore] = None,
+        autosave_interval_ms: int = 300,
+    ):
         super().__init__()
 
-        self.job_queue = JobQueue()
+        self._session_store = session_store
+        self._session_warning = ""
+        restored_current_job_id = None
+        if session_store is None:
+            self.job_queue = JobQueue()
+        else:
+            restored = session_store.load()
+            self.job_queue = restored.job_queue
+            restored_current_job_id = restored.current_job_id
+            self._session_warning = restored.warning
         self.temp_dir = Path(tempfile.mkdtemp(prefix="video_scene_splitter_"))
         self.current_job: VideoJob = None
+        self._autosave_timer = QTimer(self)
+        self._autosave_timer.setSingleShot(True)
+        self._autosave_timer.setInterval(max(0, autosave_interval_ms))
+        self._autosave_timer.timeout.connect(self._flush_autosave)
 
         self.thumbnail_thread: QThread = None
         self.thumbnail_worker: ThumbnailWorker = None
@@ -71,21 +91,21 @@ class MainWindow(QMainWindow):
         self._defer_thumbnail_regen = False
         self._thumbnail_regen_pending = False
 
-        # Undo履歴（境界のスナップショット）
-        # 境界が変わるたびに変更前の状態を積む（分割・ドラッグ・追加・削除・
-        # 自動検出・リセットすべてが対象）
-        self._undo_stack: List[List[float]] = []
+        # 境界・メタデータ・書き出し設定を含む編集履歴
+        self._undo_stack: List[JobEditSnapshot] = []
+        self._redo_stack: List[JobEditSnapshot] = []
         self._last_boundaries: Optional[List[float]] = None
-        self._undoing = False
+        self._restoring_history = False
 
         self._setup_ui()
         self._apply_theme()
         self._connect_signals()
         self._setup_shortcuts()
+        self._restore_session_ui(restored_current_job_id)
 
     def _setup_ui(self):
         self.setWindowTitle("Video Scene Splitter")
-        self.setMinimumSize(1200, 800)
+        self.setMinimumSize(960, 640)
 
         central = QWidget()
         self.setCentralWidget(central)
@@ -97,12 +117,20 @@ class MainWindow(QMainWindow):
 
         # 左側: キュー
         self.queue_widget = QueueWidget(self.job_queue)
-        self.queue_widget.setMinimumWidth(220)
+        self.queue_widget.setMinimumWidth(200)
+        self.queue_widget.setMaximumWidth(320)
         splitter.addWidget(self.queue_widget)
 
         # 中央: プレビュー + タイムライン
         center_widget = QWidget()
-        center_layout = QVBoxLayout(center_widget)
+        self.center_stack = QStackedLayout(center_widget)
+        self.center_stack.setContentsMargins(0, 0, 0, 0)
+
+        self.drop_zone = VideoDropZone()
+        self.center_stack.addWidget(self.drop_zone)
+
+        self.editor_center = QWidget()
+        center_layout = QVBoxLayout(self.editor_center)
         center_layout.setContentsMargins(0, 0, 0, 0)
         center_layout.setSpacing(5)
 
@@ -111,24 +139,24 @@ class MainWindow(QMainWindow):
 
         self.timeline_widget = TimelineWidget()
         center_layout.addWidget(self.timeline_widget)
+        self.center_stack.addWidget(self.editor_center)
+        self.center_stack.setCurrentWidget(self.drop_zone)
 
         splitter.addWidget(center_widget)
 
         # 右側: クリップリスト
         self.clip_list_widget = ClipListWidget()
-        self.clip_list_widget.setMinimumWidth(420)
+        self.clip_list_widget.setMinimumWidth(340)
+        self.clip_list_widget.hide()
         splitter.addWidget(self.clip_list_widget)
 
-        splitter.setSizes([230, 570, 400])
+        splitter.setSizes([210, 560, 420])
+        splitter.setStretchFactor(0, 0)
+        splitter.setStretchFactor(1, 2)
+        splitter.setStretchFactor(2, 1)
         main_layout.addWidget(splitter, stretch=1)
 
-        # 下部: ログ（トグル可能）
-        self.btn_toggle_log = QPushButton("ログ非表示")
-        self.btn_toggle_log.setFixedHeight(20)
-        self.btn_toggle_log.setStyleSheet("font-size: 10px; padding: 0 8px;")
-        self.btn_toggle_log.clicked.connect(self._on_toggle_log)
-        main_layout.addWidget(self.btn_toggle_log)
-
+        # 下部: コンパクトな状態表示。詳細ログは内部の開閉操作で表示する。
         self.log_widget = LogWidget()
         main_layout.addWidget(self.log_widget)
 
@@ -139,6 +167,9 @@ class MainWindow(QMainWindow):
         self.queue_widget.remove_requested.connect(self._on_remove_job)
         self.queue_widget.detect_all_requested.connect(self._on_detect_all_requested)
         self.queue_widget.clip_preview_requested.connect(self._on_queue_clip_preview)
+        self.queue_widget.queue_changed.connect(self._schedule_autosave)
+        self.drop_zone.add_requested.connect(self.queue_widget.action_add_file.trigger)
+        self.drop_zone.paths_dropped.connect(self.queue_widget.add_paths)
 
         # プレビュー → タイムライン同期
         self.preview_widget.position_changed.connect(self.timeline_widget.set_playhead)
@@ -162,6 +193,9 @@ class MainWindow(QMainWindow):
 
         # クリップリスト → 書き出し
         self.clip_list_widget.export_requested.connect(self._on_export_requested)
+        self.clip_list_widget.export_cancel_requested.connect(
+            self._on_export_cancel_requested
+        )
 
         # クリップリスト → シーン結合
         self.clip_list_widget.merge_requested.connect(self._on_merge_scenes_requested)
@@ -174,6 +208,87 @@ class MainWindow(QMainWindow):
         # クリップリスト → 日付検出
         self.clip_list_widget.date_detect_requested.connect(self._on_date_detect_requested)
         self.clip_list_widget.date_detect_cancel_requested.connect(self._on_date_detect_cancel)
+        self.clip_list_widget.edit_started.connect(self._push_edit_snapshot)
+        self.clip_list_widget.job_changed.connect(self._on_job_edited)
+
+    def _restore_session_ui(self, current_job_id: Optional[int]):
+        """保存済みキューと編集中ジョブを画面へ復元する。"""
+        self.queue_widget.refresh()
+        if self._session_warning:
+            self.log_widget.set_status("復元できない保存データがあります")
+            self.log_widget.append_log(self._session_warning)
+
+        job = self.job_queue.get_job_by_id(current_job_id) if current_job_id else None
+        if job is None or job.status not in (JobStatus.REVIEW, JobStatus.DONE):
+            return
+        self.current_job = job
+        self._show_editor_layout()
+        self.clip_list_widget.set_job(job)
+        self.preview_widget.load_video(job.source_path)
+        self._update_timeline(job)
+        self.queue_widget.select_job(job.id)
+        self.log_widget.set_status(f"復元: {job.filename}")
+        self._last_boundaries = [scene.start_time for scene in job.scenes]
+        self._regenerate_thumbnails()
+
+    def _show_editor_layout(self):
+        self.center_stack.setCurrentWidget(self.editor_center)
+        self.clip_list_widget.show()
+
+    def _show_empty_layout(self):
+        self.center_stack.setCurrentWidget(self.drop_zone)
+        self.clip_list_widget.hide()
+
+    def _schedule_autosave(self):
+        if self._session_store is not None:
+            self._autosave_timer.start()
+
+    def _flush_autosave(self):
+        if self._session_store is None:
+            return
+        current_job_id = self.current_job.id if self.current_job else None
+        try:
+            self._session_store.save(self.job_queue, current_job_id=current_job_id)
+        except OSError as exc:
+            self.log_widget.set_status("自動保存に失敗")
+            self.log_widget.append_log(f"[ERROR] 自動保存に失敗しました: {exc}")
+
+    def _push_edit_snapshot(self):
+        """変更直前の編集状態をUndo履歴へ積む。"""
+        if self.current_job is None or self._restoring_history:
+            return
+        self._append_edit_snapshot(JobEditSnapshot.capture(self.current_job))
+
+    def _append_edit_snapshot(self, snapshot: JobEditSnapshot):
+        if not self._undo_stack or self._undo_stack[-1] != snapshot:
+            self._undo_stack.append(snapshot)
+            del self._undo_stack[:-100]
+        self._redo_stack.clear()
+
+    def _on_job_edited(self):
+        self.queue_widget.refresh()
+        self._schedule_autosave()
+
+    def _restore_edit_snapshot(self, snapshot: JobEditSnapshot):
+        if self.current_job is None:
+            return
+        previous_boundaries = [scene.start_time for scene in self.current_job.scenes]
+        self._restoring_history = True
+        try:
+            snapshot.apply_to(self.current_job)
+            boundaries = [scene.start_time for scene in self.current_job.scenes]
+            self._last_boundaries = list(boundaries)
+            self.clip_list_widget.set_job(self.current_job)
+            self.timeline_widget.set_scenes(
+                boundaries,
+                self.current_job.scenes[-1].end_time if self.current_job.scenes else 0,
+            )
+            self.queue_widget.refresh()
+            if not _boundaries_equal(previous_boundaries, boundaries):
+                self._regenerate_thumbnails()
+        finally:
+            self._restoring_history = False
+        self._schedule_autosave()
 
     def _on_job_selected(self, job: VideoJob):
         """ジョブ選択時（既に編集中のジョブを表示）"""
@@ -181,11 +296,13 @@ class MainWindow(QMainWindow):
             return
         if job.status in [JobStatus.REVIEW, JobStatus.DONE]:
             self.current_job = job
+            self._show_editor_layout()
             self.clip_list_widget.set_job(job)
             self.preview_widget.load_video(job.source_path)
             self._update_timeline(job)
             # ジョブをまたいだUndoは破壊的なのでリセット
             self._undo_stack.clear()
+            self._redo_stack.clear()
             self._last_boundaries = [s.start_time for s in job.scenes]
             self._regenerate_thumbnails()
 
@@ -240,6 +357,7 @@ class MainWindow(QMainWindow):
 
         self.job_queue.remove_job(job_id)
         self.queue_widget.refresh()
+        self._schedule_autosave()
 
         if removing_current:
             self.current_job = None
@@ -248,6 +366,7 @@ class MainWindow(QMainWindow):
             self.preview_widget.cleanup()
             self.timeline_widget.clear()
             self.clip_list_widget.clear()
+            self._show_empty_layout()
             self.log_widget.set_status("待機中")
 
     def _on_queue_clip_preview(self, job: VideoJob, start_time: float):
@@ -323,6 +442,7 @@ class MainWindow(QMainWindow):
         if self.batch_progress_dialog:
             self.batch_progress_dialog.add_result(message)
         self.queue_widget.refresh()
+        self._schedule_autosave()
 
     def _on_batch_detect_error(self, message: str):
         self._batch_error = True
@@ -330,6 +450,7 @@ class MainWindow(QMainWindow):
         if self.batch_progress_dialog:
             self.batch_progress_dialog.add_result(f"[ERROR] {message}")
         self.queue_widget.refresh()
+        self._schedule_autosave()
 
     def _on_batch_detect_cancel(self):
         self._batch_cancel_requested = True
@@ -355,6 +476,7 @@ class MainWindow(QMainWindow):
             self.batch_detection_worker = None
         self.queue_widget.set_detect_all_enabled(True)
         self.queue_widget.refresh()
+        self._schedule_autosave()
         if self.batch_progress_dialog:
             self.batch_progress_dialog.set_finished(finished_message)
 
@@ -391,9 +513,11 @@ class MainWindow(QMainWindow):
             job.scenes = [Scene(index=1, start_time=0.0, end_time=duration, keep=True)]
         job.status = JobStatus.REVIEW
         self.current_job = job
+        self._show_editor_layout()
 
         boundaries = [s.start_time for s in job.scenes]
         self._undo_stack.clear()
+        self._redo_stack.clear()
         self._last_boundaries = list(boundaries)
 
         # UIを更新
@@ -409,7 +533,9 @@ class MainWindow(QMainWindow):
         if len(job.scenes) > 1:
             self.log_widget.append_log(f"検出済みクリップ: {len(job.scenes)}本")
         else:
-            self.log_widget.append_log("「ここで分割」ボタンまたはタイムライン右クリックで境界を追加")
+            self.log_widget.append_log(
+                "「分割 [S]」ボタンまたはタイムライン右クリックで境界を追加"
+            )
 
         # 一括検出で分割だけ済んだ動画は、開いたときに
         # つなぎ目カット → 結合提案 → 日付検出 を自動で走らせる
@@ -418,6 +544,7 @@ class MainWindow(QMainWindow):
             self._propose_merge_after_blank = len(job.scenes) > 1
             if not self._start_blank_detection(manual=False):
                 self._finish_deferred_thumbnails()
+        self._schedule_autosave()
 
     def _on_split_at_position(self, time: float):
         """指定位置で分割（自動一時停止）"""
@@ -446,11 +573,8 @@ class MainWindow(QMainWindow):
 
         duration = self.current_job.scenes[-1].end_time if self.current_job.scenes else 0
 
-        # Undo履歴に変更前の状態を積む（Undo実行による変更は積まない）
-        if (not self._undoing
-                and self._last_boundaries is not None
-                and boundaries != self._last_boundaries):
-            self._undo_stack.append(self._last_boundaries.copy())
+        # タイムラインはUI側が先に変わるため、モデル再構築前に履歴を保存する。
+        self._push_edit_snapshot()
         self._last_boundaries = list(boundaries)
 
         # シーンを再構築
@@ -465,6 +589,7 @@ class MainWindow(QMainWindow):
         self.log_widget.append_log(
             f"クリップ数: {len(self.current_job.scenes)}"
         )
+        self._on_job_edited()
 
     def _stop_thumbnail_worker(self):
         """サムネイルワーカーを停止して破棄"""
@@ -706,6 +831,9 @@ class MainWindow(QMainWindow):
         if dialog.exec() != BlankCutDialog.Accepted:
             return
 
+        # 境界追加と除外指定を1回のUndoで戻せるよう、操作全体の前を保存する。
+        self._push_edit_snapshot()
+
         # 単色区間の端に境界を追加して、区間だけを独立したシーンに切り出す
         boundaries = set(self.timeline_widget.get_boundaries())
         for s, e, _label in segs:
@@ -728,6 +856,7 @@ class MainWindow(QMainWindow):
         self.log_widget.append_log(
             f"単色のつなぎ目 {dropped} 区間を書き出し対象から除外しました"
         )
+        self._on_job_edited()
 
     def _on_blank_detect_error(self, message: str):
         self.log_widget.append_log(f"[ERROR] {message}")
@@ -917,6 +1046,7 @@ class MainWindow(QMainWindow):
         full = results.get("full", {})
         year_months = results.get("ym", {})
         scenes = self.current_job.scenes
+        before = JobEditSnapshot.capture(self.current_job)
 
         # 1) 完全な日付を設定
         applied = 0
@@ -949,9 +1079,12 @@ class MainWindow(QMainWindow):
         total = len(scenes)
         set_count = sum(1 for s in scenes if s.event_date is not None)
         approx = ym_applied + len(inferred)
+        if JobEditSnapshot.capture(self.current_job) != before:
+            self._append_edit_snapshot(before)
 
         if set_count > 0:
             self.clip_list_widget.refresh_clips()
+            self._on_job_edited()
             msg = (
                 f"日付検出: {applied}/{total} シーンを検出"
                 + (f"、{approx} シーンを月/前後から推定" if approx else "")
@@ -1018,6 +1151,7 @@ class MainWindow(QMainWindow):
         self.log_widget.set_status(f"書き出し中: {job.filename}")
         self.log_widget.hide_progress()
         self.clip_list_widget.set_exporting(True)
+        self._schedule_autosave()
 
         # ワーカーとスレッドを作成
         self.export_thread = QThread()
@@ -1036,6 +1170,14 @@ class MainWindow(QMainWindow):
     def _on_progress(self, message: str):
         self.log_widget.append_log(message)
 
+    def _on_export_cancel_requested(self):
+        if self.export_worker is None:
+            return
+        self.export_worker.cancel()
+        self.clip_list_widget.set_export_cancelling()
+        self.log_widget.set_status("書き出しを中止しています")
+        self.log_widget.append_log("書き出しを中止しています...")
+
     def _on_clip_progress(self, current: int, total: int):
         self.log_widget.set_progress_bar(current, total)
         self.log_widget.set_detail(f"書き出し中: {current} / {total} クリップ")
@@ -1052,6 +1194,7 @@ class MainWindow(QMainWindow):
         self.clip_list_widget.set_exporting(False)
 
         self.queue_widget.refresh()
+        self._schedule_autosave()
 
         if job.status == JobStatus.DONE:
             self.log_widget.set_status("書き出し完了")
@@ -1089,6 +1232,7 @@ class MainWindow(QMainWindow):
         self.clip_list_widget.set_exporting(False)
 
         self.queue_widget.refresh()
+        self._schedule_autosave()
 
     def _apply_theme(self):
         """ダークテーマを適用"""
@@ -1110,6 +1254,9 @@ class MainWindow(QMainWindow):
             }
             QPushButton:pressed {
                 background-color: #555;
+            }
+            QPushButton:focus {
+                border: 2px solid #4f9ddf;
             }
             QPushButton:disabled {
                 background-color: #2a2a2a;
@@ -1181,6 +1328,9 @@ class MainWindow(QMainWindow):
                 border-radius: 2px;
                 padding: 3px 6px;
             }
+            QComboBox:focus, QDateEdit:focus {
+                border: 2px solid #4f9ddf;
+            }
             QDoubleSpinBox, QSpinBox {
                 background-color: #333;
                 color: #d4d4d4;
@@ -1205,6 +1355,9 @@ class MainWindow(QMainWindow):
             }
             QCheckBox:disabled {
                 color: #666;
+            }
+            QCheckBox:focus {
+                color: #ffffff;
             }
             QLabel {
                 color: #d4d4d4;
@@ -1271,9 +1424,12 @@ class MainWindow(QMainWindow):
         s.activated.connect(self.preview_widget.step_forward)
         self._media_shortcuts.append(s)
 
-        # Ctrl+Z: Undo
-        s = QShortcut(QKeySequence("Ctrl+Z"), self)
+        # OS標準のUndo/Redo（macOSではCommand、Windows/LinuxではCtrl）
+        s = QShortcut(QKeySequence(QKeySequence.StandardKey.Undo), self)
         s.activated.connect(self._shortcut_undo)
+
+        s = QShortcut(QKeySequence(QKeySequence.StandardKey.Redo), self)
+        s.activated.connect(self._shortcut_redo)
 
         QApplication.instance().focusChanged.connect(self._on_focus_changed)
         self._on_focus_changed(None, QApplication.focusWidget())
@@ -1310,29 +1466,25 @@ class MainWindow(QMainWindow):
         self.preview_widget.request_split()
 
     def _shortcut_undo(self):
-        """Ctrl+Z: 直前の境界操作を取り消し"""
-        if not self._undo_stack:
+        """Ctrl+Z: 直前の編集を取り消す。"""
+        if not self._undo_stack or self.current_job is None:
             return
+        self._redo_stack.append(JobEditSnapshot.capture(self.current_job))
         prev = self._undo_stack.pop()
-        self._undoing = True
-        try:
-            self.timeline_widget.replace_boundaries(prev)
-        finally:
-            self._undoing = False
+        self._restore_edit_snapshot(prev)
+
+    def _shortcut_redo(self):
+        """Ctrl+Shift+Z / Ctrl+Y: 取り消した編集をやり直す。"""
+        if not self._redo_stack or self.current_job is None:
+            return
+        self._undo_stack.append(JobEditSnapshot.capture(self.current_job))
+        next_snapshot = self._redo_stack.pop()
+        self._restore_edit_snapshot(next_snapshot)
 
     def _on_player_error(self, message: str):
         """プレイヤーエラーをログに表示"""
         self.log_widget.append_log(f"[ERROR] {message}")
         self.log_widget.set_status("再生エラー")
-
-    def _on_toggle_log(self):
-        """ログ表示/非表示"""
-        if self.log_widget.isVisible():
-            self.log_widget.hide()
-            self.btn_toggle_log.setText("ログ表示")
-        else:
-            self.log_widget.show()
-            self.btn_toggle_log.setText("ログ非表示")
 
     def closeEvent(self, event):
         """ウィンドウ閉じる時"""
@@ -1386,6 +1538,8 @@ class MainWindow(QMainWindow):
             self.thumbnail_thread.quit()
             self.thumbnail_thread.wait()
 
+        self._autosave_timer.stop()
+        self._flush_autosave()
         self.preview_widget.cleanup()
 
         # 一時ディレクトリを削除

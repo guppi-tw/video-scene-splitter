@@ -151,7 +151,6 @@ def test_boundaries_changed_noops_when_boundaries_are_unchanged():
     window = SimpleNamespace(
         current_job=job,
         _last_boundaries=[0.0],
-        _undoing=False,
         _undo_stack=[],
         clip_list_widget=SimpleNamespace(refresh_clips=lambda: calls.append("refresh")),
         _regenerate_thumbnails=lambda: calls.append("thumbs"),

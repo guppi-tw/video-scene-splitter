@@ -6,7 +6,8 @@ from pathlib import Path
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QPushButton,
     QTreeWidget, QTreeWidgetItem, QHeaderView,
-    QFileDialog, QAbstractItemView, QLabel, QMessageBox, QFrame
+    QFileDialog, QAbstractItemView, QLabel, QMessageBox, QFrame,
+    QComboBox, QMenu,
 )
 from PySide6.QtCore import Signal, Qt
 from PySide6.QtGui import QBrush, QColor
@@ -60,6 +61,7 @@ class QueueWidget(QWidget):
     remove_requested = Signal(int)    # job_id - 削除リクエスト（可否はMainWindowが判断）
     detect_all_requested = Signal()   # 全動画の一括シーン検出
     clip_preview_requested = Signal(object, float)  # VideoJob, start_time
+    queue_changed = Signal()
 
     def __init__(self, job_queue: JobQueue):
         super().__init__()
@@ -67,12 +69,6 @@ class QueueWidget(QWidget):
         self._detect_all_available = True
         self.setAcceptDrops(True)
         self._setup_ui()
-
-    @staticmethod
-    def _section_label(text: str) -> QLabel:
-        label = QLabel(text)
-        label.setStyleSheet("color: #9a9a9a; font-size: 10px; font-weight: bold;")
-        return label
 
     def _setup_ui(self):
         layout = QVBoxLayout(self)
@@ -94,64 +90,63 @@ class QueueWidget(QWidget):
         btn_layout.setContentsMargins(8, 5, 8, 5)
         btn_layout.setSpacing(4)
 
-        self.btn_add_file = QPushButton("+ ファイル")
-        self.btn_add_file.clicked.connect(self._on_add_file)
+        self.btn_add = QPushButton("動画を追加")
+        self.btn_add.setAccessibleName("動画を追加")
+        add_menu = QMenu(self.btn_add)
+        self.action_add_file = add_menu.addAction("ファイルを選択…")
+        self.action_add_folder = add_menu.addAction("フォルダを選択…")
+        self.action_add_file.triggered.connect(self._on_add_file)
+        self.action_add_folder.triggered.connect(self._on_add_folder)
+        self.btn_add.setMenu(add_menu)
 
-        self.btn_add_folder = QPushButton("+ フォルダ")
-        self.btn_add_folder.clicked.connect(self._on_add_folder)
-
-        self.btn_detect_all = QPushButton("全部検出")
+        self.btn_detect_all = QPushButton("一括検出")
         self.btn_detect_all.setToolTip("待機中の全動画にシーン検出をまとめて実行します")
         self.btn_detect_all.clicked.connect(self.detect_all_requested.emit)
+
+        self.btn_open = QPushButton("開く")
+        self.btn_open.setToolTip("選択した動画を確認・編集します")
+        self.btn_open.clicked.connect(self._open_selected)
 
         self.btn_remove = QPushButton("削除")
         self.btn_remove.clicked.connect(self._on_remove)
 
-        add_layout = QHBoxLayout()
-        add_layout.setSpacing(5)
-        add_layout.addWidget(self._section_label("追加"))
-        add_layout.addWidget(self.btn_add_file)
-        add_layout.addWidget(self.btn_add_folder)
-        add_layout.addStretch()
-        btn_layout.addLayout(add_layout)
+        primary_layout = QHBoxLayout()
+        primary_layout.setSpacing(5)
+        primary_layout.addWidget(self.btn_add, stretch=1)
+        primary_layout.addWidget(self.btn_open)
+        btn_layout.addLayout(primary_layout)
 
-        process_layout = QHBoxLayout()
-        process_layout.setSpacing(5)
-        process_layout.addWidget(self._section_label("処理"))
-        process_layout.addWidget(self.btn_detect_all)
-        process_layout.addStretch()
-        process_layout.addWidget(self.btn_remove)
-        btn_layout.addLayout(process_layout)
+        secondary_layout = QHBoxLayout()
+        secondary_layout.setSpacing(5)
+        secondary_layout.addWidget(self.btn_detect_all, stretch=1)
+        secondary_layout.addWidget(self.btn_remove)
+        btn_layout.addLayout(secondary_layout)
 
         layout.addWidget(action_bar)
+
+        self.filter_combo = QComboBox()
+        self.filter_combo.setAccessibleName("キューの表示を絞り込む")
+        self.filter_combo.addItem("すべて", "all")
+        self.filter_combo.addItem("未検出", "waiting")
+        self.filter_combo.addItem("確認が必要", "review")
+        self.filter_combo.addItem("書き出し待ち", "export")
+        self.filter_combo.addItem("エラー", "error")
+        self.filter_combo.addItem("書き出し済み", "done")
+        self.filter_combo.currentIndexChanged.connect(lambda _index: self.refresh())
+        layout.addWidget(self.filter_combo)
 
         # ツリー（動画 → 分割クリップ）
         self.tree = QTreeWidget()
         self.tree.setColumnCount(2)
-        self.tree.setHeaderLabels(["ファイル名 / クリップ", "状態"])
+        self.tree.setHeaderLabels(["動画", "状態"])
         self.tree.header().setSectionResizeMode(0, QHeaderView.Stretch)
         self.tree.header().setSectionResizeMode(1, QHeaderView.ResizeToContents)
         self.tree.setSelectionMode(QAbstractItemView.SingleSelection)
         self.tree.setEditTriggers(QAbstractItemView.NoEditTriggers)
+        self.tree.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         self.tree.itemSelectionChanged.connect(self._on_selection_changed)
-        self.tree.itemDoubleClicked.connect(self._on_item_double_clicked)
+        self.tree.itemActivated.connect(self._on_item_activated)
         layout.addWidget(self.tree)
-
-        # 選択中動画を開いたときの次アクション
-        self.next_action_label = QLabel("動画を選択すると、次に起きることを表示します")
-        self.next_action_label.setWordWrap(True)
-        self.next_action_label.setStyleSheet(
-            "background-color: #242424; color: #cfcfcf; "
-            "border: 1px solid #3a3a3a; border-radius: 4px; "
-            "padding: 6px; font-size: 11px;"
-        )
-        layout.addWidget(self.next_action_label)
-
-        # D&Dヒント
-        self.drop_hint = QLabel("D&Dでファイル追加 / ダブルクリックで編集開始")
-        self.drop_hint.setAlignment(Qt.AlignCenter)
-        self.drop_hint.setStyleSheet("color: #666; font-size: 10px; padding: 4px;")
-        layout.addWidget(self.drop_hint)
         self._update_action_state()
 
     def set_detect_all_enabled(self, enabled: bool):
@@ -167,10 +162,19 @@ class QueueWidget(QWidget):
 
     def _update_action_state(self):
         waiting_count = self._waiting_job_count()
-        self.btn_remove.setEnabled(self._selected_job_item() is not None)
+        selected_job = self.get_selected_job()
+        has_selection = selected_job is not None
+        self.btn_remove.setEnabled(has_selection)
+        self.btn_open.setEnabled(has_selection)
+        if selected_job and selected_job.status == JobStatus.DONE:
+            self.btn_open.setText("確認")
+        elif selected_job and selected_job.status == JobStatus.WAITING:
+            self.btn_open.setText("編集開始")
+        else:
+            self.btn_open.setText("開く")
         self.btn_detect_all.setEnabled(self._detect_all_available and waiting_count > 0)
         self.btn_detect_all.setText(
-            f"全部検出 ({waiting_count})" if waiting_count else "全部検出"
+            f"一括検出 ({waiting_count})" if waiting_count else "一括検出"
         )
         if not self._detect_all_available:
             self.btn_detect_all.setToolTip("一括検出を実行中です")
@@ -186,9 +190,13 @@ class QueueWidget(QWidget):
             event.acceptProposedAction()
 
     def dropEvent(self, event):
+        self.add_paths([Path(url.toLocalFile()) for url in event.mimeData().urls()])
+        event.acceptProposedAction()
+
+    def add_paths(self, selected_paths: list[Path]):
+        """ファイルとフォルダをまとめてキューへ追加する。"""
         paths = []
-        for url in event.mimeData().urls():
-            path = Path(url.toLocalFile())
+        for path in selected_paths:
             if path.is_file() and path.suffix.lower() == '.mp4':
                 paths.append(path)
             elif path.is_dir():
@@ -196,6 +204,8 @@ class QueueWidget(QWidget):
         result = self.job_queue.add_files(paths)
         self.refresh()
         self._show_add_result(result)
+        if result.added:
+            self.queue_changed.emit()
 
     def _on_add_folder(self):
         folder = QFileDialog.getExistingDirectory(self, "フォルダを選択")
@@ -203,6 +213,8 @@ class QueueWidget(QWidget):
             result = self.job_queue.add_folder(Path(folder))
             self.refresh()
             self._show_add_result(result)
+            if result.added:
+                self.queue_changed.emit()
 
     def _on_add_file(self):
         files, _ = QFileDialog.getOpenFileNames(
@@ -211,6 +223,8 @@ class QueueWidget(QWidget):
         result = self.job_queue.add_files([Path(f) for f in files])
         self.refresh()
         self._show_add_result(result)
+        if result.added:
+            self.queue_changed.emit()
 
     def _collect_mp4_paths(self, folder: Path) -> list[Path]:
         return sorted(
@@ -252,41 +266,62 @@ class QueueWidget(QWidget):
             # 編集中・書き出し中の後始末が必要なためMainWindow側で削除する
             self.remove_requested.emit(job_id)
 
-    def _on_item_double_clicked(self, item: QTreeWidgetItem, _column: int):
-        """ダブルクリックで編集開始（クリップなら親動画を開く）"""
-        job_item = item if item.parent() is None else item.parent()
-        job_id = job_item.data(0, _ROLE_JOB_ID)
-        job = self.job_queue.get_job_by_id(job_id)
-        if job and job.status in [JobStatus.WAITING, JobStatus.REVIEW]:
+    def _on_item_activated(self, _item: QTreeWidgetItem, _column: int):
+        """ダブルクリックまたはEnterで選択動画を開く。"""
+        self._open_selected()
+
+    def _open_selected(self):
+        job = self.get_selected_job()
+        if job is None:
+            return
+        if job.status in (JobStatus.WAITING, JobStatus.REVIEW):
             self.open_video.emit(job)
+        elif job.status == JobStatus.DONE:
+            self.job_selected.emit(job)
 
     def _on_selection_changed(self):
         item = self.tree.currentItem()
         if item is None:
-            self._update_next_action(None)
             self._update_action_state()
             return
         if item.parent() is None:
             job = self.job_queue.get_job_by_id(item.data(0, _ROLE_JOB_ID))
             if job:
-                self._update_next_action(job)
                 self.job_selected.emit(job)
         else:
             # クリップ選択: 親動画を選択扱いにし、その位置をプレビュー
             job = self.job_queue.get_job_by_id(item.parent().data(0, _ROLE_JOB_ID))
             start = item.data(0, _ROLE_CLIP_TIME)
             if job:
-                self._update_next_action(job)
                 self.job_selected.emit(job)
                 if start is not None:
                     self.clip_preview_requested.emit(job, float(start))
         self._update_action_state()
 
-    def _update_next_action(self, job: VideoJob):
-        if job is None:
-            self.next_action_label.setText("動画を選択すると、次に起きることを表示します")
-            return
-        self.next_action_label.setText(next_open_action_text(job))
+    def _matches_filter(self, job: VideoJob) -> bool:
+        selected_filter = self.filter_combo.currentData()
+        if selected_filter == "all":
+            return True
+        if selected_filter == "waiting":
+            return job.status == JobStatus.WAITING
+        if selected_filter == "review":
+            return (
+                job.status in (JobStatus.REVIEW, JobStatus.ERROR)
+                or job.needs_post_process
+                or any(scene.is_sensitive for scene in job.scenes)
+            )
+        if selected_filter == "export":
+            return (
+                job.status == JobStatus.REVIEW
+                and bool(job.scenes)
+                and any(scene.keep for scene in job.scenes)
+                and not job.needs_post_process
+            )
+        if selected_filter == "error":
+            return job.status == JobStatus.ERROR
+        if selected_filter == "done":
+            return job.status == JobStatus.DONE
+        return True
 
     def refresh(self):
         """ツリーを更新（動画 → 分割クリップ）"""
@@ -304,11 +339,14 @@ class QueueWidget(QWidget):
             self.tree.clear()
 
             for job in self.job_queue.get_all_jobs():
+                if not self._matches_filter(job):
+                    continue
                 scene_count = len(job.scenes)
                 status_text, bg_color, fg_color = job_status_badge(job)
 
                 top = QTreeWidgetItem([job.filename, status_text])
                 top.setData(0, _ROLE_JOB_ID, job.id)
+                top.setToolTip(0, job.filename)
                 top.setBackground(1, QBrush(QColor(bg_color)))
                 top.setForeground(1, QBrush(QColor(fg_color)))
                 top.setToolTip(1, next_open_action_text(job))
@@ -320,7 +358,7 @@ class QueueWidget(QWidget):
                         f"#{scene.index}  {format_seconds(scene.start_time)}"
                         f"–{format_seconds(scene.end_time)}"
                     )
-                    state = "keep" if scene.keep else "除外"
+                    state = "" if scene.keep else "除外"
                     child = QTreeWidgetItem([label, state])
                     child.setData(0, _ROLE_CLIP_TIME, scene.start_time)
                     if not scene.keep:
@@ -337,7 +375,6 @@ class QueueWidget(QWidget):
         finally:
             self.tree.blockSignals(was_blocked)
 
-        self._update_next_action(self.get_selected_job())
         self._update_action_state()
 
     def select_job(self, job_id: int):

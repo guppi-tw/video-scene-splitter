@@ -25,6 +25,7 @@ from PySide6.QtCore import Qt
 
 # PyInstaller対応: 絶対インポートを使用
 from app.ui.main_window import MainWindow
+from app.core.session_store import SessionStore, default_session_path
 
 
 def main():
@@ -41,7 +42,7 @@ def main():
     # スタイル設定
     app.setStyle("Fusion")
     
-    window = MainWindow()
+    window = MainWindow(session_store=SessionStore(default_session_path()))
     window.show()
     
     sys.exit(app.exec())

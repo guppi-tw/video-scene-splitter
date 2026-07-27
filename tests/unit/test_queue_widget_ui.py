@@ -36,7 +36,7 @@ def test_next_open_action_explains_auto_post_processing():
     assert next_open_action_text(job) == "開くと: つなぎ目検出 -> 結合提案 -> 日付検出"
 
 
-def test_queue_selection_updates_next_action_label(tmp_path):
+def test_queue_selection_enables_explicit_open_action(tmp_path):
     _app()
     video_path = tmp_path / "video.mp4"
     video_path.touch()
@@ -49,12 +49,41 @@ def test_queue_selection_updates_next_action_label(tmp_path):
     widget = QueueWidget(queue)
     widget.refresh()
     widget.select_job(job.id)
+    opened = []
+    widget.open_video.connect(lambda selected: opened.append(selected.id))
 
-    assert widget.next_action_label.text() == (
-        "開くと: つなぎ目検出 -> 結合提案 -> 日付検出"
-    )
+    assert widget.btn_open.isEnabled() is True
+    widget.btn_open.click()
+    assert opened == [job.id]
+    assert widget.tree.headerItem().text(0) == "動画"
     assert widget.tree.topLevelItem(0).text(1) == "後処理待ち / 1本"
+    assert widget.tree.topLevelItem(0).toolTip(0) == video_path.name
 
+    widget.close()
+
+
+def test_queue_filter_shows_only_matching_work_state(tmp_path):
+    _app()
+    queue = JobQueue()
+    for name, status in (
+        ("waiting.mp4", JobStatus.WAITING),
+        ("review.mp4", JobStatus.REVIEW),
+        ("error.mp4", JobStatus.ERROR),
+        ("done.mp4", JobStatus.DONE),
+    ):
+        path = tmp_path / name
+        path.touch()
+        job = queue.add_file(path)
+        job.status = status
+        if status != JobStatus.WAITING:
+            job.scenes = [Scene(index=1, start_time=0.0, end_time=10.0)]
+
+    widget = QueueWidget(queue)
+    widget.refresh()
+    widget.filter_combo.setCurrentIndex(widget.filter_combo.findData("error"))
+
+    assert widget.tree.topLevelItemCount() == 1
+    assert widget.tree.topLevelItem(0).text(0) == "error.mp4"
     widget.close()
 
 
@@ -99,7 +128,7 @@ def test_queue_actions_follow_selection_and_waiting_jobs(tmp_path):
     widget.refresh()
 
     assert widget.btn_detect_all.isEnabled() is True
-    assert widget.btn_detect_all.text() == "全部検出 (1)"
+    assert widget.btn_detect_all.text() == "一括検出 (1)"
 
     widget.select_job(waiting_job.id)
     assert widget.btn_remove.isEnabled() is True
@@ -112,6 +141,6 @@ def test_queue_actions_follow_selection_and_waiting_jobs(tmp_path):
     waiting_job.status = JobStatus.REVIEW
     widget.refresh()
     assert widget.btn_detect_all.isEnabled() is False
-    assert widget.btn_detect_all.text() == "全部検出"
+    assert widget.btn_detect_all.text() == "一括検出"
 
     widget.close()

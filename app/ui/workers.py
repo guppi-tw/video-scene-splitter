@@ -2,6 +2,7 @@
 バックグラウンドワーカー（QThreadベース）
 """
 import logging
+from copy import deepcopy
 from pathlib import Path
 
 from PySide6.QtCore import QObject, Signal
@@ -273,6 +274,8 @@ class ExportWorker(QObject):
     def __init__(self, job: VideoJob, output_dir: Path, auto_split: bool = True):
         super().__init__()
         self.job = job
+        # 書き出し開始後のUI編集が出力内容へ混入しないよう固定する。
+        self.export_job = deepcopy(job)
         self.output_dir = output_dir
         self._cancelled = False
 
@@ -289,7 +292,7 @@ class ExportWorker(QObject):
             self.progress.emit(f"書き出し開始: {self.job.filename}")
 
             result = self.exporter.export(
-                self.job,
+                self.export_job,
                 self.output_dir,
                 progress_callback=self.progress.emit,
                 clip_progress_callback=self.clip_progress.emit,
@@ -298,13 +301,17 @@ class ExportWorker(QObject):
 
             if result.cancelled:
                 self.job.status = JobStatus.REVIEW
+                self.job.error_message = ""
                 self.progress.emit("書き出しをキャンセルしました")
             elif result.total == 0:
                 self.job.status = JobStatus.ERROR
                 self.job.error_message = "書き出し対象のシーンがありません"
             elif result.all_succeeded:
                 self.job.status = JobStatus.DONE
+                self.job.error_message = ""
+                self.job.clips = deepcopy(self.export_job.clips)
             else:
+                self.job.clips = deepcopy(self.export_job.clips)
                 failed = result.total - result.succeeded
                 self.job.status = JobStatus.ERROR
                 self.job.error_message = (
