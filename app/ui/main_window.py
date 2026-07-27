@@ -7,7 +7,9 @@ from typing import List, Optional
 
 from PySide6.QtWidgets import (
     QMainWindow, QWidget, QVBoxLayout,
-    QSplitter, QPushButton, QMessageBox, QApplication
+    QSplitter, QPushButton, QMessageBox, QApplication,
+    QAbstractButton, QAbstractItemView, QAbstractSlider,
+    QAbstractSpinBox, QComboBox, QLineEdit, QTextEdit
 )
 from PySide6.QtCore import Qt, QThread
 from PySide6.QtGui import QShortcut, QKeySequence
@@ -192,6 +194,20 @@ class MainWindow(QMainWindow):
         if (self.export_thread and self.export_thread.isRunning()
                 and self.export_worker and self.export_worker.job.id == job_id):
             QMessageBox.warning(self, "警告", "書き出し中のジョブは削除できません")
+            return
+
+        job = self.job_queue.get_job_by_id(job_id)
+        if job is None:
+            return
+        reply = QMessageBox.question(
+            self,
+            "キューから削除",
+            f"{job.filename} をキューから削除しますか？\n"
+            "分割位置やクリップの編集内容も失われます。",
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.No,
+        )
+        if reply != QMessageBox.Yes:
             return
 
         removing_current = self.current_job is not None and self.current_job.id == job_id
@@ -752,23 +768,32 @@ class MainWindow(QMainWindow):
         if not self._start_date_detection(auto=True):
             self._finish_deferred_thumbnails()
 
-    def _protected_boundaries_from_dropped(self) -> List[float]:
-        """除外(keep=False)シーンの境界を保護対象として返す。
-
-        統合提案がつなぎ目などの除外シーンを隣の採用クリップに飲み込まないよう、
-        現在のシーン構成から動的に求める（自動・手動どちらの呼び出しでも正しい）。
-        """
+    def _protected_boundaries_from_clip_state(self) -> List[float]:
+        """公開可否や出力設定が変わる境界を自動結合から保護する。"""
         if not self.current_job or not self.current_job.scenes:
             return []
         scenes = self.current_job.scenes
         duration = scenes[-1].end_time
-        protected = []
+        protected = set()
+        previous_key = None
         for scene in scenes:
+            event_name, event_date = self.current_job.get_scene_metadata(scene.index)
+            state_key = (
+                scene.keep,
+                scene.is_sensitive,
+                event_name,
+                event_date,
+                scene.filename_override,
+            )
+            if previous_key is not None and state_key != previous_key:
+                protected.add(scene.start_time)
+            previous_key = state_key
+
             if not scene.keep:
-                protected.append(scene.start_time)
+                protected.add(scene.start_time)
                 if scene.end_time < duration:
-                    protected.append(scene.end_time)
-        return protected
+                    protected.add(scene.end_time)
+        return sorted(protected)
 
     def _propose_short_scene_merge(self, manual: bool = False):
         """短いシーンが残っていれば結合を提案する（manual=Trueで手動起動）"""
@@ -777,7 +802,7 @@ class MainWindow(QMainWindow):
 
         duration = self.current_job.scenes[-1].end_time
         boundaries = self.timeline_widget.get_boundaries()
-        protected = self._protected_boundaries_from_dropped()
+        protected = self._protected_boundaries_from_clip_state()
 
         # 検出設定の最小シーン長より少し広めの初期値で提案する
         initial = max(3.0, self.timeline_widget.min_scene_spin.value())
@@ -1224,41 +1249,64 @@ class MainWindow(QMainWindow):
 
     def _setup_shortcuts(self):
         """キーボードショートカットを設定"""
+        self._media_shortcuts = []
+
         # Space: 再生/一時停止
         s = QShortcut(QKeySequence(Qt.Key_Space), self)
         s.activated.connect(self._shortcut_play_pause)
+        self._media_shortcuts.append(s)
 
         # S: ここで分割
         s = QShortcut(QKeySequence(Qt.Key_S), self)
         s.activated.connect(self._shortcut_split)
+        self._media_shortcuts.append(s)
 
         # 左矢印: コマ戻し
         s = QShortcut(QKeySequence(Qt.Key_Left), self)
         s.activated.connect(self.preview_widget.step_back)
+        self._media_shortcuts.append(s)
 
         # 右矢印: コマ送り
         s = QShortcut(QKeySequence(Qt.Key_Right), self)
         s.activated.connect(self.preview_widget.step_forward)
+        self._media_shortcuts.append(s)
 
         # Ctrl+Z: Undo
         s = QShortcut(QKeySequence("Ctrl+Z"), self)
         s.activated.connect(self._shortcut_undo)
 
+        QApplication.instance().focusChanged.connect(self._on_focus_changed)
+        self._on_focus_changed(None, QApplication.focusWidget())
+
+    @staticmethod
+    def _focus_uses_standard_keys(widget: QWidget) -> bool:
+        """Space・左右キーなどの標準操作を持つコントロールか判定する"""
+        return isinstance(
+            widget,
+            (
+                QAbstractButton,
+                QAbstractItemView,
+                QAbstractSlider,
+                QAbstractSpinBox,
+                QComboBox,
+                QLineEdit,
+                QTextEdit,
+            ),
+        )
+
+    def _on_focus_changed(self, _old: QWidget, current: QWidget):
+        """フォーム操作中はメディア用ショートカットにキーを奪わせない"""
+        enabled = not self._focus_uses_standard_keys(current)
+        for shortcut in self._media_shortcuts:
+            shortcut.setEnabled(enabled)
+
     def _shortcut_play_pause(self):
         """Space: 再生/一時停止（テキスト入力中は無視）"""
-        focused = QApplication.focusWidget()
-        from PySide6.QtWidgets import QLineEdit, QTextEdit
-        if isinstance(focused, (QLineEdit, QTextEdit)):
-            return
         if self.preview_widget.current_video_path:
             self.preview_widget.toggle_play()
 
     def _shortcut_split(self):
         """S: 分割（テキスト入力中は無視）"""
-        focused = QApplication.focusWidget()
-        from PySide6.QtWidgets import QLineEdit, QTextEdit
-        if isinstance(focused, (QLineEdit, QTextEdit)):
-            return
         self.preview_widget.request_split()
 
     def _shortcut_undo(self):

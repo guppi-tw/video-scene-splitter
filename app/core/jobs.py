@@ -200,7 +200,11 @@ class VideoJob:
     def rebuild_scenes_from_boundaries(self, boundaries: List[float], duration: float):
         """
         境界時刻リストからシーンを再構築。
-        旧シーンのメタデータは開始時刻が近いものから引き継ぐ。
+        新しい区間と重なる旧シーンからメタデータを引き継ぐ。
+
+        分割時は親シーンの属性を全ての子へ引き継ぐ。複数の旧シーンを
+        またぐ場合、メタデータは最も長く重なるシーンを基準にしつつ、
+        Keep/要注意は誤って公開対象へ戻さないよう安全側へ倒す。
         """
         if not boundaries:
             return
@@ -215,16 +219,31 @@ class VideoJob:
 
             scene = Scene(index=i + 1, start_time=start_time, end_time=end_time)
 
-            # 旧シーンからメタデータを引き継ぎ（開始時刻が近いもの）
+            overlaps = []
             for old_scene in old_scenes:
-                if abs(old_scene.start_time - start_time) < 5.0:
-                    scene.event_name = old_scene.event_name
-                    scene.event_date = old_scene.event_date
-                    scene.keep = old_scene.keep
-                    scene.is_sensitive = old_scene.is_sensitive
-                    scene.thumbnail_path = old_scene.thumbnail_path
-                    scene.filename_override = old_scene.filename_override
-                    break
+                overlap = min(end_time, old_scene.end_time) - max(
+                    start_time, old_scene.start_time
+                )
+                if overlap > 1e-6:
+                    overlaps.append((overlap, old_scene))
+
+            if overlaps:
+                # 同率なら時間順で先に現れる旧シーンを採用する。
+                _overlap, dominant = max(
+                    overlaps,
+                    key=lambda item: (item[0], -item[1].start_time),
+                )
+                scene.event_name = dominant.event_name
+                scene.event_date = dominant.event_date
+                scene.thumbnail_path = dominant.thumbnail_path
+                scene.filename_override = dominant.filename_override
+
+                overlapping_scenes = [old_scene for _, old_scene in overlaps]
+                # 一部でも除外なら結合後も除外、一部でも要注意なら要注意。
+                scene.keep = all(old_scene.keep for old_scene in overlapping_scenes)
+                scene.is_sensitive = any(
+                    old_scene.is_sensitive for old_scene in overlapping_scenes
+                )
 
             new_scenes.append(scene)
 

@@ -1,11 +1,13 @@
 """
 main_window.py の自動後処理パイプライン順序テスト
 """
+from datetime import date
 from types import SimpleNamespace
 
 from app.core.jobs import JobStatus, Scene, VideoJob
 from app.ui import main_window as main_window_module
 from app.ui.main_window import MainWindow, _boundaries_equal
+from PySide6.QtWidgets import QMessageBox
 
 
 class _LogStub:
@@ -160,6 +162,65 @@ def test_boundaries_changed_noops_when_boundaries_are_unchanged():
 
     assert calls == []
     assert _boundaries_equal([0.0, 1.0], [0.0, 1.0])
+
+
+def test_remove_job_requires_confirmation(monkeypatch, tmp_path):
+    """誤操作でキューと編集内容を即時削除しない"""
+    video_path = tmp_path / "video.mp4"
+    video_path.touch()
+    queue = main_window_module.JobQueue()
+    job = queue.add_file(video_path)
+    monkeypatch.setattr(
+        main_window_module.QMessageBox,
+        "question",
+        lambda *_args, **_kwargs: QMessageBox.No,
+    )
+    window = SimpleNamespace(
+        export_thread=None,
+        export_worker=None,
+        job_queue=queue,
+    )
+
+    MainWindow._on_remove_job(window, job.id)
+
+    assert queue.get_job_by_id(job.id) is job
+
+
+def test_auto_merge_protects_output_setting_boundaries(tmp_path):
+    """短いシーンの自動結合で日付や要注意の境界を越えない"""
+    video_path = tmp_path / "video.mp4"
+    video_path.touch()
+    job = VideoJob(
+        id=1,
+        source_path=video_path,
+        status=JobStatus.REVIEW,
+        scenes=[
+            Scene(
+                index=1,
+                start_time=0.0,
+                end_time=4.0,
+                event_date=date(2024, 8, 1),
+            ),
+            Scene(
+                index=2,
+                start_time=4.0,
+                end_time=8.0,
+                event_date=date(2024, 8, 2),
+            ),
+            Scene(
+                index=3,
+                start_time=8.0,
+                end_time=12.0,
+                event_date=date(2024, 8, 2),
+                is_sensitive=True,
+            ),
+        ],
+    )
+    window = SimpleNamespace(current_job=job)
+
+    protected = MainWindow._protected_boundaries_from_clip_state(window)
+
+    assert protected == [4.0, 8.0]
 
 
 def test_detect_all_start_builds_batch_worker_without_open_video_state(monkeypatch, tmp_path):

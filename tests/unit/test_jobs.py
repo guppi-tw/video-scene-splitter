@@ -236,6 +236,58 @@ class TestVideoJob:
         assert job.scenes[0].is_sensitive is True
         assert job.scenes[1].is_sensitive is False
 
+    def test_rebuild_scenes_split_preserves_parent_safety_state(self):
+        """除外・要注意シーンを分割しても全ての子へ安全属性を引き継ぐ"""
+        job = VideoJob(id=1, source_path=Path("/path/to/video.mp4"))
+        job.scenes = [
+            Scene(
+                index=1,
+                start_time=0.0,
+                end_time=60.0,
+                keep=False,
+                is_sensitive=True,
+                event_name="プール",
+                event_date=date(2024, 8, 1),
+                filename_override="private",
+            ),
+        ]
+
+        job.rebuild_scenes_from_boundaries([0.0, 30.0], 60.0)
+
+        assert len(job.scenes) == 2
+        for scene in job.scenes:
+            assert scene.keep is False
+            assert scene.is_sensitive is True
+            assert scene.event_name == "プール"
+            assert scene.event_date == date(2024, 8, 1)
+            assert scene.filename_override == "private"
+
+    def test_rebuild_scenes_merge_uses_safest_combined_state(self):
+        """異なる安全属性をまたぐ再構築では除外・要注意を安全側へ倒す"""
+        job = VideoJob(id=1, source_path=Path("/path/to/video.mp4"))
+        job.scenes = [
+            Scene(
+                index=1,
+                start_time=0.0,
+                end_time=10.0,
+                keep=True,
+                is_sensitive=False,
+            ),
+            Scene(
+                index=2,
+                start_time=10.0,
+                end_time=20.0,
+                keep=False,
+                is_sensitive=True,
+            ),
+        ]
+
+        job.rebuild_scenes_from_boundaries([0.0], 20.0)
+
+        assert len(job.scenes) == 1
+        assert job.scenes[0].keep is False
+        assert job.scenes[0].is_sensitive is True
+
 
 class TestJobQueue:
     """JobQueueクラスのテスト"""

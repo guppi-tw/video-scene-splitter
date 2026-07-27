@@ -54,6 +54,12 @@ class TimelineBar(QWidget):
         self.setMinimumWidth(120)
         self.setMouseTracking(True)
         self.setCursor(Qt.ArrowCursor)
+        self.setFocusPolicy(Qt.StrongFocus)
+        self.setAccessibleName("シーン境界タイムライン")
+        self.setAccessibleDescription(
+            "クリックでシーク、右クリックで境界の追加または削除、"
+            "境界をドラッグして位置を調整します"
+        )
         
         # 色設定
         self.color_background = QColor("#2a2a2a")
@@ -124,6 +130,7 @@ class TimelineBar(QWidget):
         if self.duration <= 0:
             painter.setPen(self.color_text)
             painter.drawText(self.rect(), Qt.AlignCenter, "動画を読み込んでください")
+            self._draw_focus_indicator(painter)
             return
         
         # シーン領域を描画
@@ -194,6 +201,22 @@ class TimelineBar(QWidget):
         # 現在位置
         current_text = self._format_time(self.playhead_position)
         painter.drawText(playhead_x - 20, height - 5, current_text)
+        self._draw_focus_indicator(painter)
+
+    def _draw_focus_indicator(self, painter: QPainter):
+        if not self.hasFocus():
+            return
+        painter.setBrush(Qt.NoBrush)
+        painter.setPen(QPen(QColor("#4da3ff"), 2))
+        painter.drawRect(self.rect().adjusted(1, 1, -2, -2))
+
+    def focusInEvent(self, event):
+        super().focusInEvent(event)
+        self.update()
+
+    def focusOutEvent(self, event):
+        super().focusOutEvent(event)
+        self.update()
     
     @staticmethod
     def _format_time(seconds: float) -> str:

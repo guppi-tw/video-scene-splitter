@@ -1,6 +1,7 @@
 """
 クリップ一覧ウィジェット - 手動編集用
 """
+from datetime import date
 from pathlib import Path
 from typing import Optional
 
@@ -10,7 +11,7 @@ from PySide6.QtWidgets import (
     QFileDialog, QMessageBox, QSizePolicy
 )
 from PySide6.QtCore import Qt, Signal, QDate
-from PySide6.QtGui import QPixmap
+from PySide6.QtGui import QMouseEvent, QPixmap
 
 from app.core.jobs import VideoJob, Scene, Clip
 from app.core.time_format import format_seconds
@@ -24,6 +25,38 @@ class ClickableLabel(QLabel):
     def mousePressEvent(self, event):
         if event.button() == Qt.LeftButton:
             self.clicked.emit()
+        super().mousePressEvent(event)
+
+
+class OptionalDateEdit(QDateEdit):
+    """未設定を明示できる日付入力"""
+
+    UNSET_DATE = QDate(1900, 1, 1)
+
+    def __init__(self):
+        super().__init__()
+        self.setMinimumDate(self.UNSET_DATE)
+        self.setSpecialValueText("未設定")
+        self.setDate(self.UNSET_DATE)
+        self.setToolTip("既定の日付を選択します")
+        self.setAccessibleName("既定の日付")
+
+    def set_optional_date(self, value: Optional[date]):
+        if value is None:
+            self.setDate(self.UNSET_DATE)
+        else:
+            self.setDate(QDate(value.year, value.month, value.day))
+
+    def optional_date(self) -> Optional[date]:
+        selected = self.date()
+        if selected == self.UNSET_DATE:
+            return None
+        return date(selected.year(), selected.month(), selected.day())
+
+    def mousePressEvent(self, event: QMouseEvent):
+        # 未設定からカレンダーを開くと1900年へ飛ばないよう今日を起点にする。
+        if self.date() == self.UNSET_DATE:
+            self.setDate(QDate.currentDate())
         super().mousePressEvent(event)
 
 
@@ -52,6 +85,9 @@ class ClipRow(QFrame):
 
         # 結合対象の選択チェックボックス
         self.select_check = QCheckBox()
+        self.select_check.setAccessibleName(
+            f"シーン {self.scene.index} を結合対象に選択"
+        )
         self.select_check.setToolTip(
             "結合対象として選択\n連続するシーンを選んで「選択を結合」を押すと1つにまとまります"
         )
@@ -64,6 +100,9 @@ class ClipRow(QFrame):
         self.thumb_label.setAlignment(Qt.AlignCenter)
         self.thumb_label.setStyleSheet("background-color: #333; border: 1px solid #555;")
         self.thumb_label.setCursor(Qt.PointingHandCursor)
+        self.thumb_label.setAccessibleName(
+            f"シーン {self.scene.index} を先頭からプレビュー"
+        )
         self.thumb_label.clicked.connect(
             lambda: self.preview_requested.emit(self.scene.start_time)
         )
@@ -169,6 +208,13 @@ class ClipRow(QFrame):
     def is_selected(self) -> bool:
         return self.select_check.isChecked()
 
+    def set_editing_enabled(self, enabled: bool):
+        """処理中は行内の編集操作もまとめて無効にする"""
+        self.select_check.setEnabled(enabled)
+        self.keep_check.setEnabled(enabled)
+        self.filename_edit.setEnabled(enabled and self.scene.keep)
+        self.sensitive_check.setEnabled(enabled and self.scene.keep)
+
     def _update_style(self):
         if self.scene.keep and self.scene.is_sensitive:
             self.setStyleSheet("ClipRow { background-color: #3a3320; }")
@@ -243,11 +289,16 @@ class ClipListWidget(QWidget):
         date_layout = QHBoxLayout()
         date_layout.setSpacing(6)
         date_layout.addWidget(self._section_label("日付"))
-        self.date_edit = QDateEdit()
+        self.date_edit = OptionalDateEdit()
         self.date_edit.setCalendarPopup(True)
-        self.date_edit.setDate(QDate.currentDate())
         self.date_edit.dateChanged.connect(self._on_default_metadata_changed)
         date_layout.addWidget(self.date_edit)
+        self.btn_clear_date = QPushButton("未設定に戻す")
+        self.btn_clear_date.setToolTip("既定の日付を未設定に戻します")
+        self.btn_clear_date.clicked.connect(
+            lambda: self.date_edit.set_optional_date(None)
+        )
+        date_layout.addWidget(self.btn_clear_date)
         date_layout.addStretch()
         meta_layout.addLayout(date_layout)
 
@@ -364,6 +415,7 @@ class ClipListWidget(QWidget):
 
         self.event_name_edit.setEnabled(has_job and not busy)
         self.date_edit.setEnabled(has_job and not busy)
+        self.btn_clear_date.setEnabled(has_job and not busy)
         self.btn_apply_all.setEnabled(has_job and not busy)
         self.auto_split_check.setEnabled(has_job and not busy)
         self.keep_all_check.setEnabled(has_job and not busy)
@@ -382,6 +434,9 @@ class ClipListWidget(QWidget):
             self.btn_blank_detect.setEnabled(has_job and not busy)
             self.btn_date_detect.setEnabled(has_job and not busy)
 
+        for row in self._clip_rows:
+            row.set_editing_enabled(has_job and not busy)
+
         self._update_merge_button()
 
     def set_job(self, job: VideoJob):
@@ -393,11 +448,7 @@ class ClipListWidget(QWidget):
         self.event_name_edit.blockSignals(True)
         self.date_edit.blockSignals(True)
         self.event_name_edit.setText(job.default_event_name or "")
-        if job.default_event_date:
-            d = job.default_event_date
-            self.date_edit.setDate(QDate(d.year, d.month, d.day))
-        else:
-            self.date_edit.setDate(QDate.currentDate())
+        self.date_edit.set_optional_date(job.default_event_date)
         self.event_name_edit.blockSignals(False)
         self.date_edit.blockSignals(False)
 
@@ -417,7 +468,7 @@ class ClipListWidget(QWidget):
         self.event_name_edit.blockSignals(True)
         self.date_edit.blockSignals(True)
         self.event_name_edit.clear()
-        self.date_edit.setDate(QDate.currentDate())
+        self.date_edit.set_optional_date(None)
         self.event_name_edit.blockSignals(False)
         self.date_edit.blockSignals(False)
         self._update_action_state()
@@ -465,9 +516,7 @@ class ClipListWidget(QWidget):
         if not self.current_job:
             return
         self.current_job.default_event_name = self.event_name_edit.text().strip()
-        from datetime import date
-        qdate = self.date_edit.date()
-        self.current_job.default_event_date = date(qdate.year(), qdate.month(), qdate.day())
+        self.current_job.default_event_date = self.date_edit.optional_date()
 
     def _on_apply_all(self):
         """メタデータを全クリップに適用"""
@@ -475,9 +524,7 @@ class ClipListWidget(QWidget):
             return
 
         name = self.event_name_edit.text().strip() or None
-        from datetime import date
-        qdate = self.date_edit.date()
-        event_date = date(qdate.year(), qdate.month(), qdate.day())
+        event_date = self.date_edit.optional_date()
 
         for scene in self.current_job.scenes:
             scene.event_name = name
@@ -522,11 +569,36 @@ class ClipListWidget(QWidget):
         elif not contiguous:
             self.merge_hint_label.setText("連続するシーンのみ結合できます")
             self.btn_merge.setEnabled(False)
+        elif not self._selected_scenes_are_merge_compatible(selected):
+            self.merge_hint_label.setText("書き出し設定が異なるシーンは結合できません")
+            self.btn_merge.setEnabled(False)
         else:
             self.merge_hint_label.setText(
                 f"#{selected[0]}〜#{selected[-1]} の {len(selected)}件を結合"
             )
             self.btn_merge.setEnabled(True)
+
+    def _selected_scenes_are_merge_compatible(self, indexes: list[int]) -> bool:
+        """結合で公開可否や出力メタデータが暗黙に変わらないか確認する"""
+        if not self.current_job:
+            return False
+        scenes_by_index = {scene.index: scene for scene in self.current_job.scenes}
+        keys = set()
+        for index in indexes:
+            scene = scenes_by_index.get(index)
+            if scene is None:
+                return False
+            event_name, event_date = self.current_job.get_scene_metadata(index)
+            keys.add(
+                (
+                    scene.keep,
+                    scene.is_sensitive,
+                    event_name,
+                    event_date,
+                    scene.filename_override,
+                )
+            )
+        return len(keys) == 1
 
     def _on_merge(self):
         """選択シーンの結合をリクエスト"""
@@ -534,6 +606,8 @@ class ClipListWidget(QWidget):
         if len(selected) < 2:
             return
         if selected[-1] - selected[0] + 1 != len(selected):
+            return
+        if not self._selected_scenes_are_merge_compatible(selected):
             return
         self.merge_requested.emit(selected)
 

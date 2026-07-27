@@ -49,6 +49,8 @@ class PreviewWidget(QWidget):
         # 再生/一時停止ボタン
         self.btn_play = QPushButton()
         self.btn_play.setIcon(self.style().standardIcon(QStyle.SP_MediaPlay))
+        self.btn_play.setAccessibleName("再生または一時停止")
+        self.btn_play.setToolTip("再生／一時停止 (Space)")
         self.btn_play.setFixedSize(32, 32)
         self.btn_play.clicked.connect(self._on_play_clicked)
         self.btn_play.setEnabled(False)
@@ -57,6 +59,8 @@ class PreviewWidget(QWidget):
         # 停止ボタン
         self.btn_stop = QPushButton()
         self.btn_stop.setIcon(self.style().standardIcon(QStyle.SP_MediaStop))
+        self.btn_stop.setAccessibleName("停止")
+        self.btn_stop.setToolTip("再生を停止")
         self.btn_stop.setFixedSize(32, 32)
         self.btn_stop.clicked.connect(self._on_stop_clicked)
         self.btn_stop.setEnabled(False)
@@ -84,6 +88,8 @@ class PreviewWidget(QWidget):
         # 音量スライダー
         self.btn_volume = QPushButton()
         self.btn_volume.setIcon(self.style().standardIcon(QStyle.SP_MediaVolume))
+        self.btn_volume.setAccessibleName("ミュート切り替え")
+        self.btn_volume.setToolTip("音声のミュートを切り替え")
         self.btn_volume.setFixedSize(32, 32)
         self.btn_volume.clicked.connect(self._on_mute_clicked)
         controls_layout.addWidget(self.btn_volume)
@@ -91,6 +97,7 @@ class PreviewWidget(QWidget):
         self.volume_slider = QSlider(Qt.Horizontal)
         self.volume_slider.setRange(0, 100)
         self.volume_slider.setValue(70)
+        self.volume_slider.setAccessibleName("音量")
         self.volume_slider.setFixedWidth(80)
         self.volume_slider.valueChanged.connect(self._on_volume_changed)
         controls_layout.addWidget(self.volume_slider)
@@ -104,6 +111,7 @@ class PreviewWidget(QWidget):
         # 戻すボタン（移動幅はセレクタで切替）
         self.btn_step_back = QPushButton()
         self.btn_step_back.setIcon(self.style().standardIcon(QStyle.SP_MediaSeekBackward))
+        self.btn_step_back.setAccessibleName("選択した幅だけ戻る")
         self.btn_step_back.setFixedSize(32, 24)
         self.btn_step_back.clicked.connect(self._on_step_back)
         self.btn_step_back.setEnabled(False)
@@ -120,12 +128,14 @@ class PreviewWidget(QWidget):
             else:
                 self.step_combo.addItem(f"{v:.2f}秒")
         self.step_combo.setCurrentIndex(2)  # 0.5秒デフォルト
+        self.step_combo.setAccessibleName("戻る／進むの移動幅")
         self.step_combo.setToolTip("戻る／進むの移動幅")
         controls2_layout.addWidget(self.step_combo)
 
         # 進むボタン（移動幅はセレクタで切替）
         self.btn_step_forward = QPushButton()
         self.btn_step_forward.setIcon(self.style().standardIcon(QStyle.SP_MediaSeekForward))
+        self.btn_step_forward.setAccessibleName("選択した幅だけ進む")
         self.btn_step_forward.setFixedSize(32, 24)
         self.btn_step_forward.clicked.connect(self._on_step_forward)
         self.btn_step_forward.setEnabled(False)
@@ -145,6 +155,7 @@ class PreviewWidget(QWidget):
         for v in self._speed_values:
             self.speed_combo.addItem(f"x{v:.2f}" if v != int(v) else f"x{v:.1f}")
         self.speed_combo.setCurrentIndex(3)  # x1.0デフォルト
+        self.speed_combo.setAccessibleName("再生速度")
         self.speed_combo.currentIndexChanged.connect(self._on_speed_changed)
         self.speed_combo.setToolTip("再生速度")
         controls2_layout.addWidget(self.speed_combo)
