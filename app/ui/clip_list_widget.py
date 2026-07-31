@@ -8,12 +8,18 @@ from typing import Optional
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit,
     QPushButton, QCheckBox, QScrollArea, QFrame, QDateEdit,
-    QFileDialog, QMessageBox, QSizePolicy, QMenu, QStackedLayout
+    QFileDialog, QMessageBox, QSizePolicy, QMenu, QStackedLayout, QComboBox
 )
 from PySide6.QtCore import Qt, Signal, QDate, QEvent
 from PySide6.QtGui import QMouseEvent, QPixmap
 
 from app.core.jobs import VideoJob, Scene, Clip, JobStatus
+from app.core.export_presets import EXPORT_PRESETS, get_export_preset
+from app.core.review import (
+    acknowledge_review_issues,
+    pending_review_count,
+    pending_review_issues,
+)
 from app.core.time_format import format_seconds
 from app.ui.style_helpers import set_recommended_action
 
@@ -69,15 +75,19 @@ class ClipRow(QFrame):
     filename_changed = Signal(int, str)  # scene_index, filename
     preview_requested = Signal(float)  # start_time
     selection_changed = Signal(int, bool)  # scene_index, selected
+    review_acknowledged = Signal(int)  # scene_index
     edit_started = Signal()
 
     def __init__(self, scene: Scene, job: VideoJob):
         super().__init__()
         self.scene = scene
         self.job = job
+        self._pending_issues = pending_review_issues(job, scene)
         self._editing_enabled = True
         self.setFrameShape(QFrame.StyledPanel)
-        self.setFixedHeight(70)
+        self.setFixedHeight(88 if self._pending_issues else 70)
+        self.setFocusPolicy(Qt.StrongFocus)
+        self.setAccessibleName(f"シーン {scene.index}")
         self._setup_ui()
         self._update_style()
 
@@ -176,6 +186,17 @@ class ClipRow(QFrame):
         self.filename_stack.setCurrentWidget(self.filename_label)
         info_layout.addWidget(self.filename_container)
 
+        self.review_label = QLabel()
+        self.review_label.setStyleSheet("font-size: 10px; color: #ffd27a;")
+        self.review_label.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
+        if self._pending_issues:
+            review_text = "・".join(issue.label for issue in self._pending_issues)
+            self.review_label.setText(f"確認: {review_text}")
+            self.review_label.setToolTip(review_text)
+        else:
+            self.review_label.hide()
+        info_layout.addWidget(self.review_label)
+
         layout.addLayout(info_layout, stretch=1)
 
         # Keep / 要注意 を縦に並べてコンパクトに
@@ -203,6 +224,17 @@ class ClipRow(QFrame):
         self.sensitive_check.setEnabled(self.scene.keep)
         self.sensitive_check.stateChanged.connect(self._on_sensitive_changed)
         check_layout.addWidget(self.sensitive_check)
+
+        self.btn_review_done = QPushButton("確認済み")
+        self.btn_review_done.setToolTip("表示中の確認事項を確認済みにします")
+        self.btn_review_done.setAccessibleName(
+            f"シーン {self.scene.index} の確認事項を確認済みにする"
+        )
+        self.btn_review_done.setVisible(bool(self._pending_issues))
+        self.btn_review_done.clicked.connect(
+            lambda: self.review_acknowledged.emit(self.scene.index)
+        )
+        check_layout.addWidget(self.btn_review_done)
 
         layout.addWidget(self.settings_widget)
 
@@ -303,6 +335,7 @@ class ClipRow(QFrame):
         self.filename_edit.setReadOnly(True)
         self.filename_stack.setCurrentWidget(self.filename_label)
         self.sensitive_check.setEnabled(enabled and self.scene.keep)
+        self.btn_review_done.setEnabled(enabled)
 
     def set_merge_mode(self, enabled: bool):
         self.select_check.setVisible(enabled)
@@ -326,7 +359,7 @@ class ClipRow(QFrame):
 class ClipListWidget(QWidget):
     """クリップ一覧 + メタデータ + 書き出しコントロール"""
 
-    export_requested = Signal(object, object, bool)  # VideoJob, output_dir, auto_split
+    export_requested = Signal(object, object, str)  # VideoJob, output_dir, preset_id
     export_cancel_requested = Signal()
     clip_preview_requested = Signal(float)  # start_time
     merge_requested = Signal(list)  # 結合対象のシーン番号リスト（昇順・連続）
@@ -335,6 +368,8 @@ class ClipListWidget(QWidget):
     blank_detect_cancel_requested = Signal()
     date_detect_requested = Signal()
     date_detect_cancel_requested = Signal()
+    media_signal_requested = Signal()
+    media_signal_cancel_requested = Signal()
     edit_started = Signal()
     job_changed = Signal()
 
@@ -431,6 +466,14 @@ class ClipListWidget(QWidget):
             lambda _checked=False: self.short_merge_requested.emit()
         )
 
+        self._signal_analyzing = False
+        self.btn_signal_analyze = post_menu.addAction("音声・フェードを解析")
+        self.btn_signal_analyze.setToolTip(
+            "長い無音と映像のフェードを調べ、未適用の境界候補として表示します"
+        )
+        self.btn_signal_analyze.setEnabled(False)
+        self.btn_signal_analyze.triggered.connect(self._on_signal_analyze_clicked)
+
         self._date_detecting = False
         self.btn_date_detect = post_menu.addAction("日付を検出")
         self.btn_date_detect.setToolTip(
@@ -467,10 +510,16 @@ class ClipListWidget(QWidget):
         action_layout.addWidget(self.merge_bar)
         self.merge_bar.hide()
 
-        self.auto_split_check = QCheckBox("9:55で自動分割")
-        self.auto_split_check.setChecked(True)
-        self.auto_split_check.setToolTip("595秒超のクリップを自動分割")
-        self.auto_split_check.stateChanged.connect(self._on_auto_split_toggled)
+        self.export_preset_combo = QComboBox()
+        self.export_preset_combo.setAccessibleName("書き出し方法")
+        for preset in EXPORT_PRESETS:
+            self.export_preset_combo.addItem(preset.label, preset.id)
+            index = self.export_preset_combo.count() - 1
+            self.export_preset_combo.setItemData(index, preset.description, Qt.ToolTipRole)
+        self.export_preset_combo.currentIndexChanged.connect(
+            self._on_export_preset_changed
+        )
+        self._sync_export_preset_tooltip()
 
         self.keep_all_check = QCheckBox("すべて書き出す")
         self.keep_all_check.setChecked(True)
@@ -482,13 +531,37 @@ class ClipListWidget(QWidget):
 
         export_layout = QHBoxLayout()
         export_layout.setSpacing(6)
-        export_layout.addWidget(self.auto_split_check)
+        export_layout.addWidget(QLabel("出力"))
+        export_layout.addWidget(self.export_preset_combo)
         export_layout.addWidget(self.keep_all_check)
         export_layout.addStretch()
         export_layout.addWidget(self.btn_export)
         action_layout.addLayout(export_layout)
 
         layout.addWidget(self.action_bar)
+
+        self.review_bar = QFrame()
+        self.review_bar.setObjectName("reviewBar")
+        self.review_bar.setStyleSheet(
+            "QFrame#reviewBar { background-color: #30291d; "
+            "border: 1px solid #66522e; border-radius: 4px; }"
+        )
+        review_layout = QHBoxLayout(self.review_bar)
+        review_layout.setContentsMargins(8, 5, 8, 5)
+        review_layout.setSpacing(6)
+        self.review_summary_label = QLabel("確認事項なし")
+        self.review_summary_label.setStyleSheet("font-weight: bold; color: #ffd27a;")
+        review_layout.addWidget(self.review_summary_label)
+        review_layout.addStretch()
+        self.review_only_check = QCheckBox("未確認のみ")
+        self.review_only_check.setToolTip("確認が必要なクリップだけを表示します")
+        self.review_only_check.toggled.connect(lambda _checked: self.refresh_clips())
+        review_layout.addWidget(self.review_only_check)
+        self.btn_next_review = QPushButton("次を確認")
+        self.btn_next_review.setToolTip("次の未確認クリップへ移動します")
+        self.btn_next_review.clicked.connect(self._on_next_review)
+        review_layout.addWidget(self.btn_next_review)
+        layout.addWidget(self.review_bar)
 
         # スクロール可能なクリップリスト
         self.scroll_area = QScrollArea()
@@ -504,6 +577,7 @@ class ClipListWidget(QWidget):
         self.scroll_area.setWidget(self.scroll_content)
         layout.addWidget(self.scroll_area, stretch=1)
         self._set_editor_visible(False)
+        self._review_cursor = 0
 
     def _sync_date_clear(self, *_args):
         self.btn_clear_date.setVisible(self.date_edit.optional_date() is not None)
@@ -511,10 +585,16 @@ class ClipListWidget(QWidget):
     def _set_editor_visible(self, visible: bool):
         self.meta_bar.setVisible(visible)
         self.action_bar.setVisible(visible)
+        self.review_bar.setVisible(visible)
         self.scroll_area.setVisible(visible)
 
     def _is_busy(self) -> bool:
-        return self._blank_detecting or self._date_detecting or self._exporting
+        return (
+            self._blank_detecting
+            or self._date_detecting
+            or self._signal_analyzing
+            or self._exporting
+        )
 
     def _has_editable_job(self) -> bool:
         return self.current_job is not None and bool(self.current_job.scenes)
@@ -524,12 +604,13 @@ class ClipListWidget(QWidget):
         busy = self._is_busy()
         kept = any(scene.keep for scene in self.current_job.scenes) if has_job else False
         scene_count = len(self.current_job.scenes) if has_job else 0
+        review_count = pending_review_count(self.current_job) if has_job else 0
 
         self.event_name_edit.setEnabled(has_job and not busy)
         self.date_edit.setEnabled(has_job and not busy)
         self.btn_clear_date.setEnabled(has_job and not busy)
         self.btn_apply_all.setEnabled(has_job and not busy)
-        self.auto_split_check.setEnabled(has_job and not busy)
+        self.export_preset_combo.setEnabled(has_job and not busy)
         self.keep_all_check.setEnabled(has_job and not busy)
         self.btn_merge_mode.setEnabled(has_job and scene_count > 1 and not busy)
         self.btn_postprocess.setEnabled(
@@ -538,6 +619,7 @@ class ClipListWidget(QWidget):
                 not busy
                 or self._blank_detecting
                 or self._date_detecting
+                or self._signal_analyzing
             )
         )
         if self._exporting:
@@ -548,22 +630,39 @@ class ClipListWidget(QWidget):
             self.btn_export,
             has_job
             and scene_count > 1
+            and review_count == 0
             and kept
             and not busy
             and not self._merge_mode
             and self.current_job.status == JobStatus.REVIEW,
+        )
+        self.btn_next_review.setEnabled(review_count > 0 and not busy)
+        set_recommended_action(
+            self.btn_next_review,
+            has_job
+            and scene_count > 1
+            and review_count > 0
+            and not busy
+            and not self._merge_mode,
         )
         self.btn_short_merge.setEnabled(has_job and scene_count > 1 and not busy)
 
         if self._blank_detecting:
             self.btn_blank_detect.setEnabled(True)
             self.btn_date_detect.setEnabled(False)
+            self.btn_signal_analyze.setEnabled(False)
         elif self._date_detecting:
             self.btn_blank_detect.setEnabled(False)
             self.btn_date_detect.setEnabled(True)
+            self.btn_signal_analyze.setEnabled(False)
+        elif self._signal_analyzing:
+            self.btn_blank_detect.setEnabled(False)
+            self.btn_date_detect.setEnabled(False)
+            self.btn_signal_analyze.setEnabled(True)
         else:
             self.btn_blank_detect.setEnabled(has_job and not busy)
             self.btn_date_detect.setEnabled(has_job and not busy)
+            self.btn_signal_analyze.setEnabled(has_job and not busy)
 
         for row in self._clip_rows:
             row.set_editing_enabled(has_job and not busy)
@@ -584,9 +683,15 @@ class ClipListWidget(QWidget):
         self.date_edit.blockSignals(True)
         self.event_name_edit.setText(job.default_event_name or "")
         self.date_edit.set_optional_date(job.default_event_date)
-        self.auto_split_check.blockSignals(True)
-        self.auto_split_check.setChecked(job.auto_split_enabled)
-        self.auto_split_check.blockSignals(False)
+        self.export_preset_combo.blockSignals(True)
+        preset_index = self.export_preset_combo.findData(job.export_preset)
+        if preset_index < 0:
+            preset_index = self.export_preset_combo.findData(
+                "share_fast" if job.auto_split_enabled else "archive_fast"
+            )
+        self.export_preset_combo.setCurrentIndex(max(0, preset_index))
+        self.export_preset_combo.blockSignals(False)
+        self._sync_export_preset_tooltip()
         self.event_name_edit.blockSignals(False)
         self.date_edit.blockSignals(False)
         self._sync_date_clear()
@@ -614,6 +719,7 @@ class ClipListWidget(QWidget):
         self.event_name_edit.blockSignals(False)
         self.date_edit.blockSignals(False)
         self._sync_date_clear()
+        self._review_cursor = 0
         self._update_action_state()
 
     def refresh_clips(self):
@@ -634,8 +740,14 @@ class ClipListWidget(QWidget):
             if item.widget():
                 item.widget().setParent(None)
 
-        # クリップ行を作成
-        for scene in self.current_job.scenes:
+        # クリップ行を作成。絞り込みは表示だけに作用し、データは変更しない。
+        scenes = self.current_job.scenes
+        if self.review_only_check.isChecked():
+            scenes = [
+                scene for scene in scenes
+                if pending_review_issues(self.current_job, scene)
+            ]
+        for scene in scenes:
             row = ClipRow(scene, self.current_job)
             row.preview_requested.connect(self.clip_preview_requested.emit)
             row.edit_started.connect(self.edit_started.emit)
@@ -643,6 +755,7 @@ class ClipListWidget(QWidget):
             row.sensitive_changed.connect(self._on_individual_setting_changed)
             row.filename_changed.connect(self._on_individual_setting_changed)
             row.selection_changed.connect(self._on_selection_changed)
+            row.review_acknowledged.connect(self._on_review_acknowledged)
             row.set_merge_mode(self._merge_mode)
             self._clip_rows.append(row)
             self._clip_rows_by_scene_index[scene.index] = row
@@ -650,7 +763,51 @@ class ClipListWidget(QWidget):
 
         self.scroll_layout.addStretch()
         self._sync_keep_all_check()
+        self._refresh_review_state()
         self._update_action_state()
+
+    def _refresh_review_state(self):
+        if not self.current_job:
+            self.review_summary_label.setText("確認事項なし")
+            self.btn_next_review.setEnabled(False)
+            self.review_only_check.setEnabled(False)
+            return
+        count = pending_review_count(self.current_job)
+        self.review_summary_label.setText(
+            f"確認事項 {count}件" if count else "確認事項なし"
+        )
+        self.review_only_check.setEnabled(count > 0 or self.review_only_check.isChecked())
+
+    def _on_next_review(self):
+        if not self.current_job:
+            return
+        pending = [
+            scene for scene in self.current_job.scenes
+            if pending_review_issues(self.current_job, scene)
+        ]
+        if not pending:
+            return
+        scene = pending[self._review_cursor % len(pending)]
+        self._review_cursor += 1
+        row = self._clip_rows_by_scene_index.get(scene.index)
+        if row:
+            self.scroll_area.ensureWidgetVisible(row, 0, 12)
+            row.setFocus(Qt.OtherFocusReason)
+        self.clip_preview_requested.emit(scene.start_time)
+
+    def _on_review_acknowledged(self, scene_index: int):
+        if not self.current_job:
+            return
+        scene = next(
+            (scene for scene in self.current_job.scenes if scene.index == scene_index),
+            None,
+        )
+        if scene is None or not pending_review_issues(self.current_job, scene):
+            return
+        self.edit_started.emit()
+        acknowledge_review_issues(self.current_job, scene)
+        self.refresh_clips()
+        self.job_changed.emit()
 
     def _toggle_merge_mode(self, enabled: bool):
         self._merge_mode = enabled
@@ -678,8 +835,17 @@ class ClipListWidget(QWidget):
         ):
             return
         self.edit_started.emit()
+        date_changed = event_date != self.current_job.default_event_date
         self.current_job.default_event_name = name
         self.current_job.default_event_date = event_date
+        if date_changed:
+            for scene in self.current_job.scenes:
+                scene.reviewed_flags = [
+                    flag
+                    for flag in scene.reviewed_flags
+                    if flag not in ("date_missing", "date_inferred")
+                ]
+        self.refresh_clips()
         self.job_changed.emit()
 
     def _on_apply_all(self):
@@ -699,6 +865,12 @@ class ClipListWidget(QWidget):
         for scene in self.current_job.scenes:
             scene.event_name = name
             scene.event_date = event_date
+            scene.date_source = "manual" if event_date is not None else None
+            scene.reviewed_flags = [
+                flag
+                for flag in scene.reviewed_flags
+                if flag not in ("date_missing", "date_inferred")
+            ]
 
         self.refresh_clips()
         self._update_action_state()
@@ -830,6 +1002,24 @@ class ClipListWidget(QWidget):
             )
         self._update_action_state()
 
+    def _on_signal_analyze_clicked(self):
+        if self._signal_analyzing:
+            self.media_signal_cancel_requested.emit()
+        else:
+            self.media_signal_requested.emit()
+
+    def set_media_signal_analyzing(self, analyzing: bool):
+        self._signal_analyzing = analyzing
+        if analyzing:
+            self.btn_signal_analyze.setText("音声・フェード解析を中止")
+            self.btn_signal_analyze.setToolTip("音声・フェード解析を中止します")
+        else:
+            self.btn_signal_analyze.setText("音声・フェードを解析")
+            self.btn_signal_analyze.setToolTip(
+                "長い無音と映像のフェードを調べ、未適用の境界候補として表示します"
+            )
+        self._update_action_state()
+
     def set_exporting(self, exporting: bool):
         """書き出し中は編集・後処理系の操作を止める"""
         self._exporting = exporting
@@ -865,14 +1055,24 @@ class ClipListWidget(QWidget):
         self._update_action_state()
         self.job_changed.emit()
 
-    def _on_auto_split_toggled(self, state):
+    def _sync_export_preset_tooltip(self):
+        preset = get_export_preset(self.export_preset_combo.currentData())
+        self.export_preset_combo.setToolTip(preset.description)
+
+    def _on_export_preset_changed(self, _index: int):
         if not self.current_job:
+            self._sync_export_preset_tooltip()
             return
-        enabled = state == Qt.Checked.value
-        if enabled == self.current_job.auto_split_enabled:
+        preset = get_export_preset(self.export_preset_combo.currentData())
+        self._sync_export_preset_tooltip()
+        if (
+            self.current_job.export_preset == preset.id
+            and self.current_job.auto_split_enabled == preset.auto_split
+        ):
             return
         self.edit_started.emit()
-        self.current_job.auto_split_enabled = enabled
+        self.current_job.export_preset = preset.id
+        self.current_job.auto_split_enabled = preset.auto_split
         self.job_changed.emit()
 
     def _on_export(self):
@@ -888,6 +1088,7 @@ class ClipListWidget(QWidget):
             QMessageBox.warning(self, "警告", "書き出し対象のクリップがありません")
             return
         sensitive_count = sum(1 for s in kept if s.is_sensitive)
+        preset = get_export_preset(self.export_preset_combo.currentData())
 
         output_dir = QFileDialog.getExistingDirectory(self, "出力先フォルダを選択")
         if not output_dir:
@@ -898,6 +1099,7 @@ class ClipListWidget(QWidget):
             "書き出し確認",
             f"書き出し対象: {len(kept)}個\n"
             f"要確認として分ける: {sensitive_count}個\n"
+            f"書き出し方法: {preset.label}\n"
             f"出力先: {output_dir}\n\n"
             f"要確認クリップは専用フォルダへ分けて出力されます。\n"
             f"書き出しを開始しますか？",
@@ -908,5 +1110,5 @@ class ClipListWidget(QWidget):
             self.export_requested.emit(
                 self.current_job,
                 Path(output_dir),
-                self.auto_split_check.isChecked()
+                preset.id,
             )

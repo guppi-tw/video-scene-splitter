@@ -12,6 +12,8 @@ class SceneDetectionSettings:
     detector: str = "adaptive"
     adaptive_threshold: float = 3.0
     content_threshold: float = 27.0
+    threshold_value: float = 12.0
+    fade_bias: float = 0.0
     min_scene_len_frames: int = 30
     min_boundary_gap_seconds: float = 1.0
     # 検出後、これより短いシーンは隣のシーンに統合される（0で無効）
@@ -157,6 +159,7 @@ def detect_scene_boundaries(
         from scenedetect import (
             AdaptiveDetector,
             ContentDetector,
+            ThresholdDetector,
             SceneManager,
             open_video,
         )
@@ -166,7 +169,13 @@ def detect_scene_boundaries(
             f"詳細: {exc}"
         ) from exc
 
-    if settings.detector == "content":
+    if settings.detector == "threshold":
+        detector = ThresholdDetector(
+            threshold=settings.threshold_value,
+            min_scene_len=settings.min_scene_len_frames,
+            fade_bias=settings.fade_bias,
+        )
+    elif settings.detector == "content":
         detector = ContentDetector(
             threshold=settings.content_threshold,
             min_scene_len=settings.min_scene_len_frames,

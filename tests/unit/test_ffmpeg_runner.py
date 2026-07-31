@@ -92,3 +92,54 @@ def test_extract_clip_omits_metadata_without_date(tmp_path, monkeypatch):
 
     assert ok
     assert "-metadata" not in captured["cmd"]
+
+
+def test_extract_clip_exact_mode_uses_quality_transcode_settings(tmp_path, monkeypatch):
+    runner = ffmpeg_runner.FFmpegRunner()
+    captured = {}
+
+    class FakeProcess:
+        def communicate(self, timeout=None):
+            Path(captured["cmd"][-1]).write_bytes(b"x")
+            return b"", b""
+
+    monkeypatch.setattr(
+        ffmpeg_runner.subprocess,
+        "Popen",
+        lambda cmd, **_kw: (captured.update(cmd=cmd), FakeProcess())[1],
+    )
+
+    ok = runner.extract_clip(
+        Path("input.mp4"), 1.25, 3.75, tmp_path / "exact.mp4", use_copy=False
+    )
+
+    assert ok
+    assert ["-c:v", "libx264"] == captured["cmd"][
+        captured["cmd"].index("-c:v"):captured["cmd"].index("-c:v") + 2
+    ]
+    assert "-crf" in captured["cmd"]
+    assert "-pix_fmt" in captured["cmd"]
+    assert "-c" not in captured["cmd"]
+
+
+def test_detect_silence_runs_ffmpeg_filter_and_parses_ranges(monkeypatch):
+    runner = ffmpeg_runner.FFmpegRunner()
+    captured = {}
+
+    class FakeProcess:
+        def communicate(self, timeout=None):
+            return b"", (
+                b"silence_start: 2.5\n"
+                b"silence_end: 4.0 | silence_duration: 1.5\n"
+            )
+
+    monkeypatch.setattr(
+        ffmpeg_runner.subprocess,
+        "Popen",
+        lambda cmd, **_kw: (captured.update(cmd=cmd), FakeProcess())[1],
+    )
+
+    ranges = runner.detect_silence(Path("input.mp4"), duration=10.0)
+
+    assert ranges == [(2.5, 4.0)]
+    assert "silencedetect=noise=-35dB:d=1.0" in captured["cmd"]

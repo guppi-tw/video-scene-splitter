@@ -134,6 +134,7 @@ def _install_fake_scenedetect(monkeypatch, frame_count=10):
 
     fake.AdaptiveDetector = _BaseDetector
     fake.ContentDetector = _BaseDetector
+    fake.ThresholdDetector = _BaseDetector
     fake.SceneManager = SceneManager
     fake.open_video = open_video
     monkeypatch.setitem(sys.modules, "scenedetect", fake)

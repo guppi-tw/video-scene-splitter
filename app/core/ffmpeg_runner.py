@@ -336,7 +336,15 @@ class FFmpegRunner:
         if use_copy:
             cmd.extend(["-c", "copy"])
         else:
-            cmd.extend(["-c:v", "libx264", "-c:a", "aac"])
+            cmd.extend([
+                "-c:v", "libx264",
+                "-preset", "medium",
+                "-crf", "18",
+                "-pix_fmt", "yuv420p",
+                "-c:a", "aac",
+                "-b:a", "192k",
+                "-movflags", "+faststart",
+            ])
 
         if creation_date is not None:
             cmd.extend([
@@ -388,6 +396,51 @@ class FFmpegRunner:
                 progress_callback(f"エラー: {e}")
             self._current_process = None
             return False
+
+    def detect_silence(
+        self,
+        video_path: Path,
+        duration: float,
+        noise_db: int = -35,
+        minimum_duration: float = 1.0,
+    ) -> list[tuple[float, float]]:
+        """音声の無音区間を FFmpeg の silencedetect で検出する。"""
+        if self._cancelled:
+            return []
+        cmd = [
+            self.ffmpeg_path,
+            "-hide_banner",
+            "-nostats",
+            "-i", str(video_path),
+            "-vn",
+            "-af", f"silencedetect=noise={noise_db}dB:d={minimum_duration}",
+            "-f", "null",
+            "-",
+        ]
+        try:
+            self._current_process = subprocess.Popen(
+                cmd,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                **_popen_kwargs(),
+            )
+            _stdout, stderr = self._current_process.communicate(
+                timeout=self.EXTRACT_TIMEOUT_SEC
+            )
+            self._current_process = None
+            from app.core.media_signal_detector import parse_silencedetect_output
+
+            return parse_silencedetect_output(
+                stderr.decode("utf-8", errors="ignore"), duration
+            )
+        except subprocess.TimeoutExpired:
+            if self._current_process:
+                self._current_process.kill()
+            self._current_process = None
+            return []
+        except (FileNotFoundError, OSError):
+            self._current_process = None
+            return []
 
     def get_video_duration(self, video_path: Path) -> Optional[float]:
         """動画の長さを取得（ffprobe優先、なければffmpegのヘッダ出力から解析）"""

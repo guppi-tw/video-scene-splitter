@@ -28,9 +28,15 @@ class Exporter:
     MAX_CLIP_DURATION = 595  # 9分55秒
     MIN_REMAINDER_DURATION = 30  # 30秒未満の余りは最後の2クリップで均等に再配分
 
-    def __init__(self, ffmpeg_runner: FFmpegRunner, auto_split: bool = True):
+    def __init__(
+        self,
+        ffmpeg_runner: FFmpegRunner,
+        auto_split: bool = True,
+        use_copy: bool = True,
+    ):
         self.ffmpeg = ffmpeg_runner
         self.auto_split = auto_split
+        self.use_copy = use_copy
 
     def calculate_clips(self, job: VideoJob) -> list[Clip]:
         """
@@ -246,7 +252,7 @@ class Exporter:
                     start_time=clip.start_time,
                     end_time=clip.end_time,
                     output_path=output_path,
-                    use_copy=True,
+                    use_copy=self.use_copy,
                     creation_date=clip.event_date,
                     progress_callback=progress_callback
                 )

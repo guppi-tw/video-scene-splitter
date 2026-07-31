@@ -13,6 +13,7 @@ from PySide6.QtCore import Signal, Qt
 from PySide6.QtGui import QBrush, QColor
 
 from app.core import AddBatchResult, JobQueue, VideoJob, JobStatus
+from app.core.review import pending_review_count, pending_review_issues
 from app.core.time_format import format_seconds
 
 
@@ -34,8 +35,15 @@ def job_status_badge(job: VideoJob) -> tuple[str, str, str]:
         return ("処理中", "#6a5523", "#f6e6b8")
     if job.needs_post_process:
         return (f"確認待ち / {scene_count}本", "#654a1f", "#ffe3a3")
+    review_count = pending_review_count(job)
+    if review_count:
+        return (
+            f"確認事項 {review_count} / {scene_count}本",
+            "#654a1f",
+            "#ffe3a3",
+        )
     if scene_count:
-        return (f"確認中 / {scene_count}本", "#2d4a5a", "#d4e8f2")
+        return (f"書き出し待ち / {scene_count}本", "#2d4a5a", "#d4e8f2")
     return ("未検出", "#3a3a3a", "#d4d4d4")
 
 
@@ -48,6 +56,9 @@ def next_open_action_text(job: VideoJob) -> str:
         return "この動画は書き出し済みです。選択中の内容を確認できます。"
     if job.needs_post_process:
         return "開くと: 検出済みクリップを表示し、日付検出をバックグラウンドで行います"
+    review_count = pending_review_count(job)
+    if review_count:
+        return f"開くと: {review_count}件の確認事項を順番に確認できます"
     if job.scenes:
         return "開くと: 検出済みクリップを確認・編集できます"
     return "開くと: 動画全体を1シーンとして読み込みます"
@@ -60,6 +71,7 @@ class QueueWidget(QWidget):
     open_video = Signal(object)       # VideoJob - 編集開始
     remove_requested = Signal(int)    # job_id - 削除リクエスト（可否はMainWindowが判断）
     detect_all_requested = Signal()   # 全動画の一括シーン検出
+    bulk_metadata_requested = Signal()
     clip_preview_requested = Signal(object, float)  # VideoJob, start_time
     queue_changed = Signal()
 
@@ -110,6 +122,12 @@ class QueueWidget(QWidget):
         self.btn_remove = QPushButton("削除")
         self.btn_remove.clicked.connect(self._on_remove)
 
+        self.btn_bulk_metadata = QPushButton("複数動画をまとめて設定")
+        self.btn_bulk_metadata.setToolTip(
+            "選択した複数動画へ出力名と日付をまとめて設定します"
+        )
+        self.btn_bulk_metadata.clicked.connect(self.bulk_metadata_requested.emit)
+
         primary_layout = QHBoxLayout()
         primary_layout.setSpacing(5)
         primary_layout.addWidget(self.btn_add, stretch=1)
@@ -121,6 +139,7 @@ class QueueWidget(QWidget):
         secondary_layout.addWidget(self.btn_detect_all, stretch=1)
         secondary_layout.addWidget(self.btn_remove)
         btn_layout.addLayout(secondary_layout)
+        btn_layout.addWidget(self.btn_bulk_metadata)
 
         layout.addWidget(action_bar)
 
@@ -166,6 +185,7 @@ class QueueWidget(QWidget):
         has_selection = selected_job is not None
         self.btn_remove.setEnabled(has_selection)
         self.btn_open.setEnabled(has_selection)
+        self.btn_bulk_metadata.setEnabled(bool(self.job_queue.get_all_jobs()))
         if selected_job and selected_job.status == JobStatus.DONE:
             self.btn_open.setText("確認")
         elif selected_job and selected_job.status == JobStatus.WAITING:
@@ -308,8 +328,8 @@ class QueueWidget(QWidget):
             return job.status == JobStatus.WAITING
         if selected_filter == "review":
             return (
-                job.status in (JobStatus.REVIEW, JobStatus.ERROR)
-                or job.needs_post_process
+                job.needs_post_process
+                or pending_review_count(job) > 0
                 or any(scene.is_sensitive for scene in job.scenes)
             )
         if selected_filter == "export":
@@ -318,6 +338,7 @@ class QueueWidget(QWidget):
                 and bool(job.scenes)
                 and any(scene.keep for scene in job.scenes)
                 and not job.needs_post_process
+                and pending_review_count(job) == 0
             )
         if selected_filter == "error":
             return job.status == JobStatus.ERROR
@@ -360,9 +381,20 @@ class QueueWidget(QWidget):
                         f"#{scene.index}  {format_seconds(scene.start_time)}"
                         f"–{format_seconds(scene.end_time)}"
                     )
-                    state = "" if scene.keep else "除外"
+                    issues = pending_review_issues(job, scene)
+                    states = []
+                    if not scene.keep:
+                        states.append("除外")
+                    if issues:
+                        states.append(f"確認{len(issues)}")
+                    state = "・".join(states)
                     child = QTreeWidgetItem([label, state])
                     child.setData(0, _ROLE_CLIP_TIME, scene.start_time)
+                    if issues:
+                        child.setToolTip(
+                            1,
+                            " / ".join(issue.label for issue in issues),
+                        )
                     if not scene.keep:
                         child.setForeground(0, QBrush(QColor("#888")))
                     top.addChild(child)

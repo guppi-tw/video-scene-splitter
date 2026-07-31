@@ -9,7 +9,7 @@ from PySide6.QtWidgets import (
     QMainWindow, QWidget, QVBoxLayout,
     QSplitter, QPushButton, QMessageBox, QApplication,
     QAbstractButton, QAbstractItemView, QAbstractSlider,
-    QAbstractSpinBox, QComboBox, QLineEdit, QTextEdit, QStackedLayout
+    QAbstractSpinBox, QComboBox, QLineEdit, QTextEdit, QStackedLayout, QDialog
 )
 from PySide6.QtCore import Qt, QThread, QTimer
 from PySide6.QtGui import QShortcut, QKeySequence
@@ -23,16 +23,20 @@ from app.ui.log_widget import LogWidget
 from app.ui.merge_dialog import MergeProposalDialog
 from app.ui.blank_dialog import BlankCutDialog
 from app.ui.batch_progress_dialog import BatchProgressDialog
+from app.ui.bulk_metadata_dialog import BulkMetadataDialog
 from app.ui.preview_widget import PreviewWidget
 from app.ui.timeline_widget import TimelineWidget
 from app.ui.drop_zone import VideoDropZone
 from app.ui.workers import (
     ThumbnailWorker, ExportWorker, SceneDetectionWorker,
     DateDetectionWorker, BlankDetectionWorker, BatchSceneDetectionWorker,
+    BoundaryPreviewWorker, MediaSignalWorker,
 )
 from app.core.scene_detector import absorb_short_scenes, merge_boundaries
 from app.core.session_store import SessionStore
 from app.core.edit_history import JobEditSnapshot
+from app.core.metadata import apply_bulk_metadata
+from app.core.media_signal_detector import apply_media_signal_result
 
 
 def _boundaries_equal(left: List[float], right: List[float], tolerance: float = 1e-6) -> bool:
@@ -71,6 +75,10 @@ class MainWindow(QMainWindow):
 
         self.thumbnail_thread: QThread = None
         self.thumbnail_worker: ThumbnailWorker = None
+        self.boundary_preview_thread: QThread = None
+        self.boundary_preview_worker: BoundaryPreviewWorker = None
+        self.media_signal_thread: QThread = None
+        self.media_signal_worker: MediaSignalWorker = None
         self.export_thread: QThread = None
         self.export_worker: ExportWorker = None
         self.scene_detection_thread: QThread = None
@@ -164,6 +172,9 @@ class MainWindow(QMainWindow):
         self.queue_widget.job_selected.connect(self._on_job_selected)
         self.queue_widget.remove_requested.connect(self._on_remove_job)
         self.queue_widget.detect_all_requested.connect(self._on_detect_all_requested)
+        self.queue_widget.bulk_metadata_requested.connect(
+            self._on_bulk_metadata_requested
+        )
         self.queue_widget.clip_preview_requested.connect(self._on_queue_clip_preview)
         self.queue_widget.queue_changed.connect(self._schedule_autosave)
         self.drop_zone.add_requested.connect(self.queue_widget.action_add_file.trigger)
@@ -185,6 +196,12 @@ class MainWindow(QMainWindow):
         self.timeline_widget.boundaries_changed.connect(self._on_boundaries_changed)
         self.timeline_widget.auto_detect_requested.connect(self._on_auto_detect_requested)
         self.timeline_widget.auto_detect_cancel_requested.connect(self._on_auto_detect_cancel)
+        self.timeline_widget.boundary_review_requested.connect(
+            self._on_boundary_review_requested
+        )
+        self.timeline_widget.boundary_candidates_applied.connect(
+            self._on_boundary_candidates_applied
+        )
 
         # クリップリスト → プレビュー
         self.clip_list_widget.clip_preview_requested.connect(self._on_clip_preview)
@@ -206,6 +223,12 @@ class MainWindow(QMainWindow):
         # クリップリスト → 日付検出
         self.clip_list_widget.date_detect_requested.connect(self._on_date_detect_requested)
         self.clip_list_widget.date_detect_cancel_requested.connect(self._on_date_detect_cancel)
+        self.clip_list_widget.media_signal_requested.connect(
+            self._on_media_signal_requested
+        )
+        self.clip_list_widget.media_signal_cancel_requested.connect(
+            self._on_media_signal_cancel_requested
+        )
         self.clip_list_widget.edit_started.connect(self._push_edit_snapshot)
         self.clip_list_widget.job_changed.connect(self._on_job_edited)
 
@@ -281,6 +304,9 @@ class MainWindow(QMainWindow):
                 boundaries,
                 self.current_job.scenes[-1].end_time if self.current_job.scenes else 0,
             )
+            self.timeline_widget.set_boundary_candidates(
+                self.current_job.suggested_boundaries
+            )
             self.queue_widget.refresh()
             if not _boundaries_equal(previous_boundaries, boundaries):
                 self._regenerate_thumbnails()
@@ -293,6 +319,8 @@ class MainWindow(QMainWindow):
         if job is self.current_job:
             return
         if job.status in [JobStatus.REVIEW, JobStatus.DONE]:
+            self._stop_boundary_preview_worker()
+            self._stop_media_signal_worker()
             self.current_job = job
             self._show_editor_layout()
             self.clip_list_widget.set_job(job)
@@ -329,6 +357,8 @@ class MainWindow(QMainWindow):
 
         if removing_current:
             self._stop_thumbnail_worker()
+            self._stop_boundary_preview_worker()
+            self._stop_media_signal_worker()
             if self.scene_detection_thread and self.scene_detection_thread.isRunning():
                 if self.scene_detection_worker:
                     self.scene_detection_worker.cancel()
@@ -424,6 +454,37 @@ class MainWindow(QMainWindow):
 
         self.batch_detection_thread.start()
 
+    def _on_bulk_metadata_requested(self):
+        jobs = self.job_queue.get_all_jobs()
+        if not jobs:
+            return
+        selected = self.queue_widget.get_selected_job()
+        selected_id = selected.id if selected else (
+            self.current_job.id if self.current_job else None
+        )
+        dialog = BulkMetadataDialog(jobs, selected_id, self)
+        if dialog.exec() != QDialog.Accepted:
+            return
+        selected_ids = set(dialog.selected_job_ids())
+        selected_jobs = [
+            job for job in jobs if job.id in selected_ids
+        ]
+        current_before = (
+            JobEditSnapshot.capture(self.current_job)
+            if self.current_job is not None
+            and self.current_job.id in selected_ids
+            else None
+        )
+        changed = apply_bulk_metadata(selected_jobs, dialog.metadata_update())
+        if not changed:
+            return
+        if current_before is not None:
+            self._append_edit_snapshot(current_before)
+            self.clip_list_widget.set_job(self.current_job)
+        self.queue_widget.refresh()
+        self.log_widget.append_log(f"{changed}本の動画へ情報をまとめて反映しました")
+        self._schedule_autosave()
+
     def _on_batch_detect_progress(self, message: str):
         self._on_progress(message)
         if self.batch_progress_dialog:
@@ -486,6 +547,9 @@ class MainWindow(QMainWindow):
         if not job:
             return
 
+        self._stop_boundary_preview_worker()
+        self._stop_media_signal_worker()
+
         self.log_widget.clear_log()
         self.log_widget.set_status(f"編集中: {job.filename}")
         self.log_widget.append_log("動画情報を取得中...")
@@ -526,6 +590,7 @@ class MainWindow(QMainWindow):
         self.clip_list_widget.set_job(job)
         self.preview_widget.load_video(job.source_path)
         self.timeline_widget.set_scenes(boundaries, duration)
+        self.timeline_widget.set_boundary_candidates(job.suggested_boundaries)
 
         # サムネイルはバックグラウンドで生成（UIをブロックしない）
         self._regenerate_thumbnails()
@@ -581,6 +646,14 @@ class MainWindow(QMainWindow):
 
         # シーンを再構築
         self.current_job.rebuild_scenes_from_boundaries(boundaries, duration)
+        remaining_candidates = [
+            candidate
+            for candidate in self.current_job.suggested_boundaries
+            if not any(abs(candidate - boundary) < 0.05 for boundary in boundaries)
+        ]
+        if remaining_candidates != self.current_job.suggested_boundaries:
+            self.current_job.suggested_boundaries = remaining_candidates
+            self.timeline_widget.set_boundary_candidates(remaining_candidates)
 
         # クリップリストを更新
         self.clip_list_widget.refresh_clips()
@@ -600,8 +673,155 @@ class MainWindow(QMainWindow):
                 self.thumbnail_worker.cancel()
             self.thumbnail_thread.quit()
             self.thumbnail_thread.wait()
+
         self.thumbnail_thread = None
         self.thumbnail_worker = None
+
+    def _stop_boundary_preview_worker(self):
+        if self.boundary_preview_thread and self.boundary_preview_thread.isRunning():
+            if self.boundary_preview_worker:
+                self.boundary_preview_worker.cancel()
+            self.boundary_preview_thread.quit()
+            self.boundary_preview_thread.wait()
+        self.boundary_preview_thread = None
+        self.boundary_preview_worker = None
+
+    def _stop_media_signal_worker(self):
+        """音声・フェード解析を停止し、ジョブ切替後の結果混入を防ぐ。"""
+        if self.media_signal_thread and self.media_signal_thread.isRunning():
+            if self.media_signal_worker:
+                self.media_signal_worker.cancel()
+            self.media_signal_thread.quit()
+            self.media_signal_thread.wait()
+        self.media_signal_thread = None
+        self.media_signal_worker = None
+        self.clip_list_widget.set_media_signal_analyzing(False)
+
+    def _on_boundary_review_requested(self, boundary_time: float):
+        if not self.current_job or not self.current_job.scenes:
+            return
+        self._stop_boundary_preview_worker()
+        duration = self.current_job.scenes[-1].end_time
+        self.boundary_preview_thread = QThread()
+        self.boundary_preview_worker = BoundaryPreviewWorker(
+            self.current_job,
+            boundary_time,
+            duration,
+            self.temp_dir,
+        )
+        self.boundary_preview_worker.moveToThread(self.boundary_preview_thread)
+        self.boundary_preview_thread.started.connect(
+            self.boundary_preview_worker.run
+        )
+        self.boundary_preview_worker.preview_ready.connect(
+            self.timeline_widget.show_boundary_preview
+        )
+        self.boundary_preview_worker.error.connect(
+            self.timeline_widget.boundary_review_status.setText
+        )
+        self.boundary_preview_worker.finished.connect(
+            self._on_boundary_preview_finished
+        )
+        self.boundary_preview_thread.start()
+
+    def _on_boundary_preview_finished(self):
+        if self.sender() is not self.boundary_preview_worker:
+            return
+        if self.boundary_preview_thread:
+            self.boundary_preview_thread.quit()
+            self.boundary_preview_thread.wait()
+        self.boundary_preview_thread = None
+        self.boundary_preview_worker = None
+
+    def _on_media_signal_requested(self):
+        """無音・フェード解析を開始し、結果は未適用候補として扱う。"""
+        if not self.current_job or not self.current_job.scenes:
+            return
+        if self.media_signal_thread and self.media_signal_thread.isRunning():
+            return
+
+        duration = self.current_job.scenes[-1].end_time
+        self.log_widget.append_log("音声・フェード解析を開始しました")
+        self.log_widget.set_status("音声・フェード解析中")
+        self.clip_list_widget.set_media_signal_analyzing(True)
+
+        self.media_signal_thread = QThread()
+        self.media_signal_worker = MediaSignalWorker(self.current_job, duration)
+        self.media_signal_worker.moveToThread(self.media_signal_thread)
+        self.media_signal_thread.started.connect(self.media_signal_worker.run)
+        self.media_signal_worker.progress.connect(self._on_progress)
+        self.media_signal_worker.progress_percent.connect(
+            self._on_media_signal_percent
+        )
+        self.media_signal_worker.analysis_complete.connect(
+            self._on_media_signal_complete
+        )
+        self.media_signal_worker.error.connect(self._on_media_signal_error)
+        self.media_signal_worker.finished.connect(self._on_media_signal_finished)
+        self.media_signal_thread.start()
+
+    def _on_media_signal_cancel_requested(self):
+        if self.media_signal_worker:
+            self.media_signal_worker.cancel()
+            self.log_widget.append_log("音声・フェード解析を中止しています…")
+
+    def _on_media_signal_percent(self, percent: int):
+        self.log_widget.set_progress_bar(percent, 100)
+        self.log_widget.set_detail(f"音声・フェード解析中: {percent}%")
+
+    def _on_media_signal_complete(self, result):
+        """解析結果をタイムラインを変えず、確認理由と境界候補へ反映する。"""
+        sender = self.sender()
+        if (
+            isinstance(sender, MediaSignalWorker)
+            and sender is not self.media_signal_worker
+        ):
+            return
+        if not self.current_job:
+            return
+
+        before = JobEditSnapshot.capture(self.current_job)
+        apply_media_signal_result(self.current_job, result)
+        if JobEditSnapshot.capture(self.current_job) != before:
+            self._append_edit_snapshot(before)
+
+        self.timeline_widget.set_boundary_candidates(
+            self.current_job.suggested_boundaries
+        )
+        self.clip_list_widget.refresh_clips()
+        self.queue_widget.refresh()
+        self.log_widget.append_log(
+            "音声・フェード解析: "
+            f"長い無音 {len(result.silence_ranges)}件、"
+            f"フェード {len(result.fade_times)}件、"
+            f"境界候補 {len(result.candidate_times)}件"
+        )
+        self._schedule_autosave()
+
+    def _on_media_signal_error(self, message: str):
+        self.log_widget.append_log(f"[ERROR] {message}")
+
+    def _on_media_signal_finished(self):
+        if self.sender() is not self.media_signal_worker:
+            return
+        self.log_widget.hide_progress()
+        if self.media_signal_thread:
+            self.media_signal_thread.quit()
+            self.media_signal_thread.wait()
+        self.media_signal_thread = None
+        self.media_signal_worker = None
+        self.clip_list_widget.set_media_signal_analyzing(False)
+        if self.current_job:
+            self.log_widget.set_status(f"編集中: {self.current_job.filename}")
+
+    def _on_boundary_candidates_applied(self, candidates: List[float]):
+        if not self.current_job:
+            return
+        self.current_job.suggested_boundaries = []
+        self.log_widget.append_log(
+            f"音声・フェードの境界候補 {len(candidates)}件を追加しました"
+        )
+        self._schedule_autosave()
 
     def _begin_deferred_thumbnails(self):
         """自動後処理中はサムネイル生成を止め、最後に1回だけ再生成する"""
@@ -1026,12 +1246,19 @@ class MainWindow(QMainWindow):
         year_months = results.get("ym", {})
         scenes = self.current_job.scenes
         before = JobEditSnapshot.capture(self.current_job)
+        for scene in scenes:
+            scene.reviewed_flags = [
+                flag
+                for flag in scene.reviewed_flags
+                if flag not in ("date_missing", "date_inferred")
+            ]
 
         # 1) 完全な日付を設定
         applied = 0
         for scene in scenes:
             if scene.index in full:
                 scene.event_date = full[scene.index]
+                scene.date_source = "detected"
                 applied += 1
 
         # 2) 年月だけ読めたシーンは日を補完（同年月の検出済みシーンの日があれば
@@ -1045,6 +1272,7 @@ class MainWindow(QMainWindow):
                 continue
             y, m = year_months[scene.index]
             scene.event_date = date(y, m, day_by_ym.get((y, m), 1))
+            scene.date_source = "inferred"
             ym_applied += 1
 
         # 3) まだ日付が無いシーンを前後のシーンから補完
@@ -1054,6 +1282,7 @@ class MainWindow(QMainWindow):
         for scene in scenes:
             if scene.event_date is None and scene.index in inferred:
                 scene.event_date = inferred[scene.index]
+                scene.date_source = "inferred"
 
         total = len(scenes)
         set_count = sum(1 for s in scenes if s.event_date is not None)
@@ -1119,8 +1348,9 @@ class MainWindow(QMainWindow):
         scene_start_times = [scene.start_time for scene in job.scenes]
         duration = job.scenes[-1].end_time
         self.timeline_widget.set_scenes(scene_start_times, duration)
+        self.timeline_widget.set_boundary_candidates(job.suggested_boundaries)
 
-    def _on_export_requested(self, job: VideoJob, output_dir: Path, auto_split: bool):
+    def _on_export_requested(self, job: VideoJob, output_dir: Path, export_preset: str):
         """書き出しリクエスト"""
         if self.export_thread and self.export_thread.isRunning():
             QMessageBox.warning(self, "警告", "書き出し中です")
@@ -1134,7 +1364,9 @@ class MainWindow(QMainWindow):
 
         # ワーカーとスレッドを作成
         self.export_thread = QThread()
-        self.export_worker = ExportWorker(job, output_dir, auto_split=auto_split)
+        self.export_worker = ExportWorker(
+            job, output_dir, export_preset=export_preset
+        )
         self.export_worker.moveToThread(self.export_thread)
 
         # シグナル接続
@@ -1519,6 +1751,9 @@ class MainWindow(QMainWindow):
                 self.thumbnail_worker.cancel()
             self.thumbnail_thread.quit()
             self.thumbnail_thread.wait()
+
+        self._stop_boundary_preview_worker()
+        self._stop_media_signal_worker()
 
         self._autosave_timer.stop()
         self._flush_autosave()

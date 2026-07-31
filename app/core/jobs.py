@@ -53,6 +53,10 @@ class Scene:
     event_name: Optional[str] = None  # イベント名（Noneで引き継ぎ）
     event_date: Optional[date] = None  # 日付（Noneで引き継ぎ）
     filename_override: Optional[str] = None  # ファイル名の直接指定
+    # 自動解析で見つかった確認理由と、そのうちユーザーが確認済みの理由。
+    analysis_flags: list[str] = field(default_factory=list)
+    reviewed_flags: list[str] = field(default_factory=list)
+    date_source: Optional[str] = None  # detected / inferred / manual
     
     @property
     def duration(self) -> float:
@@ -122,6 +126,8 @@ class VideoJob:
     clips: list[Clip] = field(default_factory=list)
     output_dir: Optional[Path] = None
     auto_split_enabled: bool = True
+    export_preset: str = "share_fast"
+    suggested_boundaries: list[float] = field(default_factory=list)
     error_message: str = ""
     # 一括検出で分割済み。開いたときに日付検出などの仕上げ処理が必要
     needs_post_process: bool = False
@@ -236,10 +242,25 @@ class VideoJob:
                 )
                 scene.event_name = dominant.event_name
                 scene.event_date = dominant.event_date
+                scene.date_source = dominant.date_source
                 scene.thumbnail_path = dominant.thumbnail_path
                 scene.filename_override = dominant.filename_override
 
                 overlapping_scenes = [old_scene for _, old_scene in overlaps]
+                scene.analysis_flags = list(dict.fromkeys(
+                    flag
+                    for old_scene in sorted(
+                        overlapping_scenes, key=lambda item: item.start_time
+                    )
+                    for flag in old_scene.analysis_flags
+                ))
+                if overlapping_scenes:
+                    reviewed = set(overlapping_scenes[0].reviewed_flags)
+                    for old_scene in overlapping_scenes[1:]:
+                        reviewed.intersection_update(old_scene.reviewed_flags)
+                    scene.reviewed_flags = [
+                        flag for flag in scene.analysis_flags if flag in reviewed
+                    ]
                 # 一部でも除外なら結合後も除外、一部でも要注意なら要注意。
                 scene.keep = all(old_scene.keep for old_scene in overlapping_scenes)
                 scene.is_sensitive = any(

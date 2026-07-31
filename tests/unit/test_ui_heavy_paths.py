@@ -4,12 +4,13 @@ Regression tests for UI paths that can accidentally fan out heavy work.
 from datetime import date
 from pathlib import Path
 
-from PySide6.QtWidgets import QApplication, QFileDialog
+from PySide6.QtWidgets import QApplication, QFileDialog, QMessageBox
 from PySide6.QtCore import QDate, Qt
 from PySide6.QtTest import QTest
 
 from app.core.jobs import JobQueue, JobStatus, Scene, VideoJob
 from app.core.session_store import SessionStore
+from app.core.media_signal_detector import build_media_signal_result
 from app.ui.clip_list_widget import ClipListWidget
 from app.ui.main_window import MainWindow
 from app.ui.preview_widget import PreviewWidget
@@ -123,6 +124,39 @@ def test_export_button_becomes_cancel_action_while_exporting(tmp_path):
     widget.close()
 
 
+def test_export_preset_controls_split_and_exact_export_choice(monkeypatch, tmp_path):
+    _app()
+    source = tmp_path / "preset.mp4"
+    source.touch()
+    job = VideoJob(
+        id=1,
+        source_path=source,
+        status=JobStatus.REVIEW,
+        scenes=[Scene(index=1, start_time=0.0, end_time=4.0)],
+    )
+    widget = ClipListWidget()
+    widget.set_job(job)
+    emitted = []
+    widget.export_requested.connect(lambda *_args: emitted.append(_args))
+    monkeypatch.setattr(
+        QFileDialog, "getExistingDirectory", lambda *_args, **_kwargs: str(tmp_path)
+    )
+    monkeypatch.setattr(
+        QMessageBox, "question", lambda *_args, **_kwargs: QMessageBox.Yes
+    )
+
+    exact_index = widget.export_preset_combo.findData("exact")
+    widget.export_preset_combo.setCurrentIndex(exact_index)
+
+    assert job.export_preset == "exact"
+    assert job.auto_split_enabled is True
+    assert "再エンコード" in widget.export_preset_combo.toolTip()
+
+    widget.btn_export.click()
+    assert emitted[0][2] == "exact"
+    widget.close()
+
+
 def test_export_worker_freezes_editable_job_state_at_start(tmp_path):
     source = tmp_path / "snapshot.mp4"
     source.touch()
@@ -150,6 +184,21 @@ def test_export_worker_freezes_editable_job_state_at_start(tmp_path):
     assert worker.export_job.default_event_name == "開始時"
     assert worker.export_job.scenes[0].keep is True
     assert worker.export_job.scenes[0].filename_override == "開始時"
+
+
+def test_export_worker_resolves_exact_boundary_preset(tmp_path):
+    source = tmp_path / "exact-worker.mp4"
+    source.touch()
+    job = VideoJob(
+        id=1,
+        source_path=source,
+        scenes=[Scene(index=1, start_time=0.25, end_time=4.75)],
+    )
+
+    worker = ExportWorker(job, tmp_path, export_preset="exact")
+
+    assert worker.exporter.auto_split is True
+    assert worker.exporter.use_copy is False
 
 
 def test_clip_editor_hides_low_frequency_controls_until_needed(tmp_path):
@@ -192,8 +241,74 @@ def test_clip_editor_hides_low_frequency_controls_until_needed(tmp_path):
     assert widget.btn_clear_date.isHidden() is False
 
     widget.btn_merge_mode.click()
+    row = widget._clip_rows[0]
     assert row.select_check.isHidden() is False
     assert row.settings_widget.isHidden() is True
+    widget.close()
+
+
+def test_clip_editor_guides_user_through_only_pending_review_items(tmp_path):
+    _app()
+    source = tmp_path / "review-guide.mp4"
+    source.touch()
+    job = VideoJob(
+        id=1,
+        source_path=source,
+        status=JobStatus.REVIEW,
+        default_event_date=date(1998, 8, 12),
+        scenes=[
+            Scene(
+                index=1,
+                start_time=0.0,
+                end_time=2.0,
+                date_source="inferred",
+            ),
+            Scene(index=2, start_time=2.0, end_time=8.0),
+        ],
+    )
+    widget = ClipListWidget()
+    widget.set_job(job)
+    previewed = []
+    widget.clip_preview_requested.connect(previewed.append)
+
+    assert widget.review_summary_label.text() == "確認事項 1件"
+    assert "3秒未満" in widget._clip_rows[0].review_label.text()
+    assert "日付は推定" in widget._clip_rows[0].review_label.text()
+    assert widget.btn_next_review.property("recommended") is True
+    assert widget.btn_export.property("recommended") is False
+
+    widget.btn_next_review.click()
+    assert previewed == [0.0]
+
+    widget._clip_rows[0].btn_review_done.click()
+    assert widget.review_summary_label.text() == "確認事項なし"
+    assert job.scenes[0].reviewed_flags == ["short_scene", "date_inferred"]
+    assert widget.btn_next_review.property("recommended") is False
+    assert widget.btn_export.property("recommended") is True
+    widget.close()
+
+
+def test_changing_default_date_reopens_a_new_missing_date_review(tmp_path):
+    _app()
+    source = tmp_path / "date-review.mp4"
+    source.touch()
+    job = VideoJob(
+        id=1,
+        source_path=source,
+        status=JobStatus.REVIEW,
+        scenes=[Scene(index=1, start_time=0.0, end_time=8.0)],
+    )
+    widget = ClipListWidget()
+    widget.set_job(job)
+
+    widget._clip_rows[0].btn_review_done.click()
+    assert widget.review_summary_label.text() == "確認事項なし"
+
+    widget.date_edit.setDate(QDate(1998, 8, 12))
+    widget.btn_clear_date.click()
+
+    assert widget.review_summary_label.text() == "確認事項 1件"
+    assert "日付未設定" in widget._clip_rows[0].review_label.text()
     widget.close()
 
 
@@ -205,6 +320,7 @@ def test_recommended_action_moves_from_detection_to_export(tmp_path):
         id=1,
         source_path=source,
         status=JobStatus.REVIEW,
+        default_event_date=date(1998, 8, 12),
         scenes=[Scene(index=1, start_time=0.0, end_time=8.0)],
     )
     timeline = TimelineWidget()
@@ -265,6 +381,53 @@ def test_scene_detection_finishes_without_opening_correction_modals(tmp_path):
     window.close()
 
 
+def test_media_signal_results_stay_as_non_destructive_review_candidates(tmp_path):
+    _app()
+    source = tmp_path / "signals.mp4"
+    source.touch()
+    job = VideoJob(
+        id=1,
+        source_path=source,
+        status=JobStatus.REVIEW,
+        default_event_date=date(1998, 8, 12),
+        scenes=[
+            Scene(index=1, start_time=0.0, end_time=10.0),
+            Scene(index=2, start_time=10.0, end_time=20.0),
+        ],
+    )
+    result = build_media_signal_result(
+        existing_boundaries=[0.0, 10.0],
+        duration=20.0,
+        silence_ranges=[(4.0, 6.0)],
+        fade_times=[15.0],
+    )
+    window = MainWindow()
+    window.job_queue._jobs.append(job)
+    window.current_job = job
+    window.clip_list_widget.set_job(job)
+    window.timeline_widget.set_scenes([0.0, 10.0], 20.0)
+
+    window._on_media_signal_complete(result)
+
+    assert window.timeline_widget.get_boundaries() == [0.0, 10.0]
+    assert window.timeline_widget.boundary_candidates == [4.0, 6.0, 15.0]
+    assert "長い無音" in window.clip_list_widget._clip_rows[0].review_label.text()
+    assert "フェード候補" in window.clip_list_widget._clip_rows[1].review_label.text()
+
+    window._regenerate_thumbnails = lambda: None
+    window.timeline_widget.action_apply_candidates.trigger()
+
+    assert window.timeline_widget.get_boundaries() == [
+        0.0,
+        4.0,
+        6.0,
+        10.0,
+        15.0,
+    ]
+    assert job.suggested_boundaries == []
+    window.close()
+
+
 def test_opening_batch_detected_video_does_not_start_modal_corrections(
     monkeypatch, tmp_path
 ):
@@ -310,6 +473,7 @@ def test_merge_action_becomes_recommended_only_after_valid_selection(tmp_path):
         id=1,
         source_path=source,
         status=JobStatus.REVIEW,
+        default_event_date=date(1998, 8, 12),
         scenes=[
             Scene(index=1, start_time=0.0, end_time=4.0),
             Scene(index=2, start_time=4.0, end_time=8.0),
@@ -343,6 +507,52 @@ def test_timeline_replace_same_boundaries_does_not_emit():
     widget.replace_boundaries([4.0, 0.0, 4.0])
 
     assert emitted == []
+    widget.close()
+
+
+def test_timeline_reviews_and_nudges_nearest_boundary_inline():
+    _app()
+    widget = TimelineWidget()
+    widget.set_scenes([0.0, 4.0, 8.0], 12.0)
+    widget.set_playhead(4.2)
+    requested = []
+    changed = []
+    widget.boundary_review_requested.connect(requested.append)
+    widget.boundaries_changed.connect(changed.append)
+
+    widget.btn_review_boundary.click()
+
+    assert requested == [4.0]
+    assert widget.boundary_review_panel.isHidden() is False
+    assert "4.00秒" in widget.boundary_review_title.text()
+
+    widget.btn_boundary_earlier.click()
+
+    assert changed[-1] == [0.0, 3.9, 8.0]
+    assert requested[-1] == 3.9
+    widget.close()
+
+
+def test_timeline_keeps_signal_candidates_separate_until_user_applies_them():
+    _app()
+    widget = TimelineWidget()
+    widget.set_scenes([0.0, 10.0], 20.0)
+    changed = []
+    widget.boundaries_changed.connect(changed.append)
+
+    widget.set_boundary_candidates([4.0, 6.0])
+
+    assert widget.candidate_summary_label.text() == "未適用候補 2件"
+    assert widget.candidate_summary_label.isHidden() is False
+    assert widget.action_apply_candidates.text() == "候補を境界に追加 (2)"
+    assert widget.action_apply_candidates.isEnabled() is True
+    assert widget.get_boundaries() == [0.0, 10.0]
+
+    widget.action_apply_candidates.trigger()
+
+    assert changed[-1] == [0.0, 4.0, 6.0, 10.0]
+    assert widget.candidate_summary_label.isHidden() is True
+    assert widget.action_apply_candidates.isEnabled() is False
     widget.close()
 
 
@@ -544,6 +754,7 @@ def test_detected_dates_can_be_undone(tmp_path):
 
     window._on_date_detect_complete({"full": {1: date(1998, 8, 12)}, "ym": {}})
     assert job.scenes[0].event_date == date(1998, 8, 12)
+    assert job.scenes[0].date_source == "detected"
 
     window._shortcut_undo()
     assert job.scenes[0].event_date is None
@@ -705,6 +916,7 @@ def test_clip_actions_disable_irrelevant_controls_while_busy(tmp_path):
 
     assert widget.btn_blank_detect.isEnabled() is True
     assert widget.btn_date_detect.isEnabled() is True
+    assert widget.btn_signal_analyze.isEnabled() is True
     assert widget.btn_short_merge.isEnabled() is True
     assert widget.btn_export.isEnabled() is True
 
@@ -718,6 +930,13 @@ def test_clip_actions_disable_irrelevant_controls_while_busy(tmp_path):
     assert all(not row.filename_edit.isEnabled() for row in widget._clip_rows)
 
     widget.set_blank_detecting(False)
+    widget.set_media_signal_analyzing(True)
+    assert widget.btn_signal_analyze.text() == "音声・フェード解析を中止"
+    assert widget.btn_signal_analyze.isEnabled() is True
+    assert widget.btn_blank_detect.isEnabled() is False
+    assert widget.btn_date_detect.isEnabled() is False
+    widget.set_media_signal_analyzing(False)
+
     widget.set_date_detecting(True)
     assert widget.btn_date_detect.text() == "日付検出を中止"
     assert widget.btn_date_detect.isEnabled() is True

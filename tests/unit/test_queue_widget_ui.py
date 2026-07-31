@@ -1,6 +1,7 @@
 """
 キュー表示UIの状態表示テスト
 """
+from datetime import date
 from pathlib import Path
 
 from PySide6.QtWidgets import QApplication
@@ -36,6 +37,37 @@ def test_next_open_action_explains_auto_post_processing():
     assert next_open_action_text(job) == (
         "開くと: 検出済みクリップを表示し、日付検出をバックグラウンドで行います"
     )
+
+
+def test_job_status_badge_counts_only_pending_review_items():
+    job = VideoJob(
+        id=1,
+        source_path=Path("/tmp/video.mp4"),
+        status=JobStatus.REVIEW,
+        default_event_date=date(1998, 8, 12),
+    )
+    job.scenes = [
+        Scene(index=1, start_time=0.0, end_time=2.0),
+        Scene(index=2, start_time=2.0, end_time=8.0),
+    ]
+
+    text, _bg_color, _fg_color = job_status_badge(job)
+
+    assert text == "確認事項 1 / 2本"
+
+
+def test_job_status_badge_names_review_complete_jobs_as_ready_to_export():
+    job = VideoJob(
+        id=1,
+        source_path=Path("/tmp/video.mp4"),
+        status=JobStatus.REVIEW,
+        default_event_date=date(1998, 8, 12),
+        scenes=[Scene(index=1, start_time=0.0, end_time=10.0)],
+    )
+
+    text, _bg_color, _fg_color = job_status_badge(job)
+
+    assert text == "書き出し待ち / 1本"
 
 
 def test_queue_selection_enables_explicit_open_action(tmp_path):
@@ -89,6 +121,32 @@ def test_queue_filter_shows_only_matching_work_state(tmp_path):
     widget.close()
 
 
+def test_review_and_export_filters_follow_pending_review_items(tmp_path):
+    _app()
+    queue = JobQueue()
+    needs_path = tmp_path / "needs-review.mp4"
+    ready_path = tmp_path / "ready.mp4"
+    needs_path.touch()
+    ready_path.touch()
+    needs_review = queue.add_file(needs_path)
+    ready = queue.add_file(ready_path)
+    for job in (needs_review, ready):
+        job.status = JobStatus.REVIEW
+        job.default_event_date = date(1998, 8, 12)
+    needs_review.scenes = [Scene(index=1, start_time=0.0, end_time=2.0)]
+    ready.scenes = [Scene(index=1, start_time=0.0, end_time=8.0)]
+
+    widget = QueueWidget(queue)
+    widget.filter_combo.setCurrentIndex(widget.filter_combo.findData("review"))
+    assert widget.tree.topLevelItemCount() == 1
+    assert widget.tree.topLevelItem(0).text(0) == "needs-review.mp4"
+
+    widget.filter_combo.setCurrentIndex(widget.filter_combo.findData("export"))
+    assert widget.tree.topLevelItemCount() == 1
+    assert widget.tree.topLevelItem(0).text(0) == "ready.mp4"
+    widget.close()
+
+
 def test_queue_refresh_does_not_emit_selection_side_effects(tmp_path):
     _app()
     video_path = tmp_path / "video.mp4"
@@ -123,6 +181,7 @@ def test_queue_actions_follow_selection_and_waiting_jobs(tmp_path):
 
     assert widget.btn_remove.isEnabled() is False
     assert widget.btn_detect_all.isEnabled() is False
+    assert widget.btn_bulk_metadata.isEnabled() is False
 
     waiting_path = tmp_path / "waiting.mp4"
     waiting_path.touch()
@@ -131,6 +190,12 @@ def test_queue_actions_follow_selection_and_waiting_jobs(tmp_path):
 
     assert widget.btn_detect_all.isEnabled() is True
     assert widget.btn_detect_all.text() == "一括検出 (1)"
+    assert widget.btn_bulk_metadata.isEnabled() is True
+
+    bulk_requests = []
+    widget.bulk_metadata_requested.connect(lambda: bulk_requests.append(True))
+    widget.btn_bulk_metadata.click()
+    assert bulk_requests == [True]
 
     widget.select_job(waiting_job.id)
     assert widget.btn_remove.isEnabled() is True

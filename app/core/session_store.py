@@ -59,6 +59,9 @@ def _scene_to_json(scene: Scene) -> dict[str, Any]:
         "event_name": scene.event_name,
         "event_date": _date_to_json(scene.event_date),
         "filename_override": scene.filename_override,
+        "analysis_flags": list(scene.analysis_flags),
+        "reviewed_flags": list(scene.reviewed_flags),
+        "date_source": scene.date_source,
     }
 
 
@@ -72,6 +75,9 @@ def _scene_from_json(data: dict[str, Any]) -> Scene:
         event_name=data.get("event_name"),
         event_date=_date_from_json(data.get("event_date")),
         filename_override=data.get("filename_override"),
+        analysis_flags=[str(flag) for flag in data.get("analysis_flags", [])],
+        reviewed_flags=[str(flag) for flag in data.get("reviewed_flags", [])],
+        date_source=data.get("date_source"),
     )
 
 
@@ -107,6 +113,8 @@ def _job_to_json(job: VideoJob) -> dict[str, Any]:
         "clips": [_clip_to_json(clip) for clip in job.clips],
         "output_dir": _path_to_json(job.output_dir),
         "auto_split_enabled": job.auto_split_enabled,
+        "export_preset": job.export_preset,
+        "suggested_boundaries": list(job.suggested_boundaries),
         "error_message": job.error_message,
         "needs_post_process": job.needs_post_process,
     }
@@ -124,6 +132,11 @@ def _job_from_json(data: dict[str, Any]) -> VideoJob:
         raw_status = JobStatus.ERROR
         error_message = "元動画が見つかりません"
 
+    auto_split_enabled = bool(data.get("auto_split_enabled", True))
+    export_preset = data.get("export_preset")
+    if not export_preset:
+        export_preset = "share_fast" if auto_split_enabled else "archive_fast"
+
     return VideoJob(
         id=int(data["id"]),
         source_path=source_path,
@@ -133,7 +146,11 @@ def _job_from_json(data: dict[str, Any]) -> VideoJob:
         scenes=scenes,
         clips=[_clip_from_json(clip) for clip in data.get("clips", [])],
         output_dir=Path(data["output_dir"]) if data.get("output_dir") else None,
-        auto_split_enabled=bool(data.get("auto_split_enabled", True)),
+        auto_split_enabled=auto_split_enabled,
+        export_preset=str(export_preset),
+        suggested_boundaries=[
+            float(value) for value in data.get("suggested_boundaries", [])
+        ],
         error_message=error_message,
         needs_post_process=bool(data.get("needs_post_process", False)),
     )

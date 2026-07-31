@@ -242,6 +242,18 @@ class TestExport(TestExporter):
         output_path = mock_ffmpeg.extract_clip.call_args.kwargs["output_path"]
         assert output_path.parent == tmp_path / "sensitive" / "2024-05-20_テストイベント"
 
+    def test_exact_export_transcodes_instead_of_copying(self, mock_ffmpeg, sample_job, tmp_path):
+        mock_ffmpeg.extract_clip.return_value = True
+        sample_job.scenes = [
+            Scene(index=1, start_time=1.25, end_time=3.75, keep=True),
+        ]
+        exporter = Exporter(mock_ffmpeg, use_copy=False)
+
+        result = exporter.export(sample_job, tmp_path)
+
+        assert result.all_succeeded
+        assert mock_ffmpeg.extract_clip.call_args.kwargs["use_copy"] is False
+
     def test_export_does_not_overwrite_existing_file(self, exporter, mock_ffmpeg, sample_job, tmp_path):
         """既存ファイル（別ジョブや過去の書き出し）を上書きしない"""
         mock_ffmpeg.extract_clip.return_value = True

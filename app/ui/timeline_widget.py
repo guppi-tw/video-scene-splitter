@@ -7,10 +7,12 @@ from dataclasses import dataclass
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QPushButton,
     QLabel, QToolTip, QMenu, QDoubleSpinBox, QFormLayout,
-    QWidgetAction, QMessageBox,
+    QWidgetAction, QMessageBox, QFrame,
 )
 from PySide6.QtCore import Qt, Signal, QRect, QPoint
-from PySide6.QtGui import QPainter, QColor, QPen, QBrush, QMouseEvent, QFont
+from PySide6.QtGui import (
+    QPainter, QColor, QPen, QBrush, QMouseEvent, QFont, QPixmap,
+)
 
 from app.core.scene_detector import SceneDetectionSettings
 from app.core.time_format import format_seconds
@@ -38,6 +40,7 @@ class TimelineBar(QWidget):
     boundary_added = Signal(float)  # time
     boundary_removed = Signal(int)  # index
     position_clicked = Signal(float)  # time（クリックした位置）
+    boundary_review_requested = Signal(float)
     
     MARKER_WIDTH = 8  # マーカーのドラッグ可能な幅
     MIN_SCENE_DURATION = 1.0  # 最小シーン長（秒）
@@ -46,6 +49,7 @@ class TimelineBar(QWidget):
         super().__init__()
         self.duration: float = 0.0
         self.boundaries: List[BoundaryMarker] = []
+        self.candidate_times: List[float] = []
         self.playhead_position: float = 0.0
         
         self._dragging_index: Optional[int] = None
@@ -88,6 +92,10 @@ class TimelineBar(QWidget):
     def set_playhead(self, position: float):
         """再生位置を設定"""
         self.playhead_position = position
+        self.update()
+
+    def set_candidates(self, candidates: List[float]):
+        self.candidate_times = list(candidates)
         self.update()
     
     def _time_to_x(self, time: float) -> int:
@@ -159,6 +167,15 @@ class TimelineBar(QWidget):
                 cy = bar_top + (bar_height + fm.ascent() - fm.descent()) // 2
                 painter.drawText(cx, cy, label)
         
+        # 未適用の解析候補は点線で表示し、確定済み境界と区別する。
+        candidate_pen = QPen(QColor("#55bde6"), 2, Qt.DashLine)
+        painter.setPen(candidate_pen)
+        for time in self.candidate_times:
+            x = self._time_to_x(time)
+            painter.drawLine(x, bar_top, x, bar_top + bar_height)
+            painter.setBrush(QBrush(QColor("#55bde6")))
+            painter.drawEllipse(QPoint(x, bar_top + bar_height // 2), 3, 3)
+
         # 境界線を描画
         for i, marker in enumerate(self.boundaries):
             x = self._time_to_x(marker.time)
@@ -308,6 +325,13 @@ class TimelineBar(QWidget):
         
         if boundary_idx is not None:
             # 境界上で右クリック
+            action_review = menu.addAction("境界の前後を比較")
+            action_review.triggered.connect(
+                lambda: self.boundary_review_requested.emit(
+                    self.boundaries[boundary_idx].time
+                )
+            )
+            menu.addSeparator()
             action_delete = menu.addAction("この境界を削除")
             action_delete.triggered.connect(
                 lambda: self._on_delete_boundary(boundary_idx)
@@ -337,12 +361,16 @@ class TimelineWidget(QWidget):
     seek_requested = Signal(float)  # シーク要求（秒）
     auto_detect_requested = Signal()
     auto_detect_cancel_requested = Signal()
+    boundary_review_requested = Signal(float)
+    boundary_candidates_applied = Signal(list)
 
     def __init__(self):
         super().__init__()
         self.duration: float = 0.0
         self.scene_start_times: List[float] = []
+        self.boundary_candidates: List[float] = []
         self._detecting = False
+        self._reviewed_boundary_time: Optional[float] = None
         self._setup_ui()
     
     def _setup_ui(self):
@@ -356,6 +384,14 @@ class TimelineWidget(QWidget):
         self.label_title = QLabel("タイムライン")
         self.label_title.setStyleSheet("font-weight: bold;")
         header_layout.addWidget(self.label_title)
+
+        self.candidate_summary_label = QLabel()
+        self.candidate_summary_label.setStyleSheet(
+            "color: #72c8ea; font-weight: bold;"
+        )
+        self.candidate_summary_label.setAccessibleName("未適用の境界候補数")
+        self.candidate_summary_label.hide()
+        header_layout.addWidget(self.candidate_summary_label)
         
         header_layout.addStretch()
 
@@ -394,6 +430,10 @@ class TimelineWidget(QWidget):
         self.btn_auto_detect.setEnabled(False)
         header_layout.addWidget(self.btn_auto_detect)
 
+        # 幅が狭い画面でもラベルが潰れないよう、低頻度操作は2段目へ分ける。
+        secondary_header_layout = QHBoxLayout()
+        secondary_header_layout.addStretch()
+
         self.btn_settings = QPushButton("設定")
         self.btn_settings.setToolTip("シーン検出の感度と最小シーン長")
         settings_menu = QMenu(self.btn_settings)
@@ -402,7 +442,15 @@ class TimelineWidget(QWidget):
         settings_menu.addAction(settings_action)
         self.btn_settings.setMenu(settings_menu)
         self.btn_settings.setEnabled(False)
-        header_layout.addWidget(self.btn_settings)
+        secondary_header_layout.addWidget(self.btn_settings)
+
+        self.btn_review_boundary = QPushButton("境界確認")
+        self.btn_review_boundary.setToolTip(
+            "再生位置に最も近い境界の直前・直後を並べて確認します"
+        )
+        self.btn_review_boundary.clicked.connect(self._review_nearest_boundary)
+        self.btn_review_boundary.setEnabled(False)
+        header_layout.addWidget(self.btn_review_boundary)
 
         self.btn_help = QPushButton("操作方法")
         help_menu = QMenu(self.btn_help)
@@ -417,18 +465,23 @@ class TimelineWidget(QWidget):
             action = help_menu.addAction(text)
             action.setEnabled(False)
         self.btn_help.setMenu(help_menu)
-        header_layout.addWidget(self.btn_help)
+        secondary_header_layout.addWidget(self.btn_help)
 
         boundary_menu_button = QPushButton("その他")
         boundary_menu = QMenu(boundary_menu_button)
+        self.action_apply_candidates = boundary_menu.addAction("境界候補はありません")
+        self.action_apply_candidates.setEnabled(False)
+        self.action_apply_candidates.triggered.connect(self._on_apply_candidates)
+        boundary_menu.addSeparator()
         self.btn_reset = boundary_menu.addAction("境界をすべて削除")
         self.btn_reset.setToolTip("動画全体を1つのクリップへ戻します")
         self.btn_reset.triggered.connect(self._on_reset)
         self.btn_reset.setEnabled(False)
         boundary_menu_button.setMenu(boundary_menu)
-        header_layout.addWidget(boundary_menu_button)
+        secondary_header_layout.addWidget(boundary_menu_button)
         
         layout.addLayout(header_layout)
+        layout.addLayout(secondary_header_layout)
         
         # タイムラインバー
         self.timeline_bar = TimelineBar()
@@ -436,20 +489,96 @@ class TimelineWidget(QWidget):
         self.timeline_bar.boundary_added.connect(self._on_boundary_added)
         self.timeline_bar.boundary_removed.connect(self._on_boundary_removed)
         self.timeline_bar.position_clicked.connect(self._on_position_clicked)
+        self.timeline_bar.boundary_review_requested.connect(
+            self._open_boundary_review
+        )
         layout.addWidget(self.timeline_bar)
+
+        # 境界確認は明示的に開いたときだけ現れるインラインパネル。
+        self.boundary_review_panel = QFrame()
+        self.boundary_review_panel.setObjectName("boundaryReviewPanel")
+        self.boundary_review_panel.setStyleSheet(
+            "QFrame#boundaryReviewPanel { background-color: #20252a; "
+            "border: 1px solid #3d596d; border-radius: 4px; }"
+        )
+        review_layout = QVBoxLayout(self.boundary_review_panel)
+        review_layout.setContentsMargins(8, 6, 8, 6)
+        review_layout.setSpacing(5)
+
+        review_header = QHBoxLayout()
+        self.boundary_review_title = QLabel("境界")
+        self.boundary_review_title.setStyleSheet("font-weight: bold;")
+        review_header.addWidget(self.boundary_review_title)
+        self.boundary_review_status = QLabel("")
+        self.boundary_review_status.setStyleSheet("color: #aaa;")
+        review_header.addWidget(self.boundary_review_status)
+        review_header.addStretch()
+        self.btn_close_boundary_review = QPushButton("閉じる")
+        self.btn_close_boundary_review.clicked.connect(
+            self.boundary_review_panel.hide
+        )
+        review_header.addWidget(self.btn_close_boundary_review)
+        review_layout.addLayout(review_header)
+
+        images_layout = QHBoxLayout()
+        images_layout.setSpacing(8)
+        self.boundary_before_label = QLabel("境界前")
+        self.boundary_after_label = QLabel("境界後")
+        for label, caption in (
+            (self.boundary_before_label, "境界前 −0.25秒"),
+            (self.boundary_after_label, "境界後 ＋0.25秒"),
+        ):
+            label.setFixedSize(160, 90)
+            label.setAlignment(Qt.AlignCenter)
+            label.setText(caption)
+            label.setStyleSheet("background-color: #161616; border: 1px solid #444;")
+            label.setAccessibleName(caption)
+            column = QWidget()
+            column_layout = QVBoxLayout(column)
+            column_layout.setContentsMargins(0, 0, 0, 0)
+            column_layout.setSpacing(3)
+            caption_label = QLabel(caption)
+            caption_label.setAlignment(Qt.AlignCenter)
+            caption_label.setStyleSheet("color: #bbb; font-size: 10px;")
+            column_layout.addWidget(caption_label)
+            column_layout.addWidget(label, alignment=Qt.AlignCenter)
+            images_layout.addWidget(column, stretch=1)
+        review_layout.addLayout(images_layout)
+
+        controls = QHBoxLayout()
+        controls.addStretch()
+        self.btn_boundary_earlier = QPushButton("−0.1秒")
+        self.btn_boundary_earlier.setToolTip("境界を0.1秒前へ移動")
+        self.btn_boundary_earlier.clicked.connect(
+            lambda: self._nudge_reviewed_boundary(-0.1)
+        )
+        controls.addWidget(self.btn_boundary_earlier)
+        self.btn_boundary_later = QPushButton("＋0.1秒")
+        self.btn_boundary_later.setToolTip("境界を0.1秒後へ移動")
+        self.btn_boundary_later.clicked.connect(
+            lambda: self._nudge_reviewed_boundary(0.1)
+        )
+        controls.addWidget(self.btn_boundary_later)
+        review_layout.addLayout(controls)
+        layout.addWidget(self.boundary_review_panel)
+        self.boundary_review_panel.hide()
         
     
     def set_scenes(self, scene_start_times: List[float], duration: float):
         """シーン情報を設定"""
         self.duration = duration
         self.scene_start_times = scene_start_times.copy()
+        self._reviewed_boundary_time = None
+        self.boundary_review_panel.hide()
 
         self.timeline_bar.set_duration(duration)
         self.timeline_bar.set_boundaries(scene_start_times)
+        self.timeline_bar.set_candidates(self.boundary_candidates)
 
         self.btn_reset.setEnabled(True)
         self.btn_auto_detect.setEnabled(True)
         self.btn_settings.setEnabled(True)
+        self.btn_review_boundary.setEnabled(len(self.scene_start_times) > 1)
         self._sync_recommended_action()
 
     def clear(self):
@@ -458,10 +587,14 @@ class TimelineWidget(QWidget):
         self.scene_start_times = []
         self.timeline_bar.set_duration(0.0)
         self.timeline_bar.set_boundaries([])
+        self.set_boundary_candidates([])
         self.timeline_bar.set_playhead(0.0)
         self.btn_reset.setEnabled(False)
         self.btn_auto_detect.setEnabled(False)
         self.btn_settings.setEnabled(False)
+        self.btn_review_boundary.setEnabled(False)
+        self.boundary_review_panel.hide()
+        self._reviewed_boundary_time = None
         self._sync_recommended_action()
 
     def add_boundary(self, time: float):
@@ -486,8 +619,36 @@ class TimelineWidget(QWidget):
         self.scene_start_times = normalized
         self.timeline_bar.set_boundaries(normalized)
         self.btn_reset.setEnabled(True)
+        self.btn_review_boundary.setEnabled(len(self.scene_start_times) > 1)
         self._sync_recommended_action()
         self._emit_changes()
+
+    def set_boundary_candidates(self, candidates: List[float]):
+        """解析で見つかった未適用候補を確定境界とは別に表示する。"""
+        normalized = sorted({
+            round(float(time), 3)
+            for time in candidates
+            if 0.0 < float(time) < self.duration
+        })
+        self.boundary_candidates = normalized
+        self.timeline_bar.set_candidates(normalized)
+        if normalized:
+            self.candidate_summary_label.setText(
+                f"未適用候補 {len(normalized)}件"
+            )
+            self.candidate_summary_label.show()
+            self.action_apply_candidates.setText(
+                f"候補を境界に追加 ({len(normalized)})"
+            )
+            self.action_apply_candidates.setEnabled(not self._detecting)
+            self.action_apply_candidates.setToolTip(
+                "音声・フェード解析の候補をタイムラインへ追加します"
+            )
+        else:
+            self.candidate_summary_label.hide()
+            self.action_apply_candidates.setText("境界候補はありません")
+            self.action_apply_candidates.setEnabled(False)
+            self.action_apply_candidates.setToolTip("")
 
     def set_auto_detect_enabled(self, enabled: bool):
         """自動検出ボタンの有効状態を設定"""
@@ -510,6 +671,12 @@ class TimelineWidget(QWidget):
         self.threshold_spin.setEnabled(not detecting)
         self.min_scene_spin.setEnabled(not detecting)
         self.btn_settings.setEnabled(self.duration > 0 and not detecting)
+        self.btn_review_boundary.setEnabled(
+            len(self.scene_start_times) > 1 and not detecting
+        )
+        self.action_apply_candidates.setEnabled(
+            bool(self.boundary_candidates) and not detecting
+        )
         self._sync_recommended_action()
 
     def _sync_recommended_action(self):
@@ -577,6 +744,8 @@ class TimelineWidget(QWidget):
         if 0 < index < len(self.scene_start_times):
             del self.scene_start_times[index]
             self.timeline_bar.set_boundaries(self.scene_start_times)
+            self.btn_review_boundary.setEnabled(len(self.scene_start_times) > 1)
+            self.boundary_review_panel.hide()
             self._emit_changes()
     
     def _on_reset(self):
@@ -594,10 +763,95 @@ class TimelineWidget(QWidget):
             if reply != QMessageBox.Yes:
                 return
         self.replace_boundaries([0.0])
+
+    def _on_apply_candidates(self):
+        if not self.boundary_candidates:
+            return
+        candidates = list(self.boundary_candidates)
+        self.replace_boundaries(self.scene_start_times + candidates)
+        self.set_boundary_candidates([])
+        self.boundary_candidates_applied.emit(candidates)
     
     def _on_position_clicked(self, time: float):
         """タイムライン上でクリックされた"""
         self.seek_requested.emit(time)
+
+    def _review_nearest_boundary(self):
+        boundaries = self.scene_start_times[1:]
+        if not boundaries:
+            return
+        nearest = min(
+            boundaries,
+            key=lambda boundary: abs(boundary - self.timeline_bar.playhead_position),
+        )
+        self._open_boundary_review(nearest)
+
+    def _open_boundary_review(self, boundary_time: float):
+        self._reviewed_boundary_time = float(boundary_time)
+        self.boundary_review_title.setText(f"境界 {boundary_time:.2f}秒")
+        self.boundary_review_status.setText("画像を準備中…")
+        self.boundary_before_label.setPixmap(QPixmap())
+        self.boundary_after_label.setPixmap(QPixmap())
+        self.boundary_before_label.setText("境界前 −0.25秒")
+        self.boundary_after_label.setText("境界後 ＋0.25秒")
+        self.boundary_review_panel.show()
+        self.boundary_review_requested.emit(float(boundary_time))
+
+    def show_boundary_preview(
+        self,
+        boundary_time: float,
+        before_path: str,
+        after_path: str,
+    ) -> None:
+        """生成済みの境界前後画像をインラインパネルへ表示する。"""
+        if (
+            self._reviewed_boundary_time is None
+            or abs(self._reviewed_boundary_time - boundary_time) > 0.001
+        ):
+            return
+        loaded = 0
+        for label, path in (
+            (self.boundary_before_label, before_path),
+            (self.boundary_after_label, after_path),
+        ):
+            pixmap = QPixmap(path)
+            if not pixmap.isNull():
+                label.setPixmap(
+                    pixmap.scaled(
+                        label.size(), Qt.KeepAspectRatio, Qt.SmoothTransformation
+                    )
+                )
+                loaded += 1
+        self.boundary_review_status.setText(
+            "前後を比較" if loaded == 2 else "画像を表示できませんでした"
+        )
+
+    def _nudge_reviewed_boundary(self, delta: float):
+        if self._reviewed_boundary_time is None or len(self.scene_start_times) < 2:
+            return
+        index = min(
+            range(1, len(self.scene_start_times)),
+            key=lambda i: abs(self.scene_start_times[i] - self._reviewed_boundary_time),
+        )
+        previous = self.scene_start_times[index - 1]
+        following = (
+            self.scene_start_times[index + 1]
+            if index + 1 < len(self.scene_start_times)
+            else self.duration
+        )
+        new_time = round(
+            max(previous + TimelineBar.MIN_SCENE_DURATION, min(
+                following - TimelineBar.MIN_SCENE_DURATION,
+                self.scene_start_times[index] + delta,
+            )),
+            3,
+        )
+        if abs(new_time - self.scene_start_times[index]) <= 1e-6:
+            return
+        self.scene_start_times[index] = new_time
+        self.timeline_bar.set_boundaries(self.scene_start_times)
+        self._emit_changes()
+        self._open_boundary_review(new_time)
     
     def _emit_changes(self):
         """変更をシグナルで通知"""

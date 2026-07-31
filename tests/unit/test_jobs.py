@@ -249,6 +249,9 @@ class TestVideoJob:
                 event_name="プール",
                 event_date=date(2024, 8, 1),
                 filename_override="private",
+                analysis_flags=["silence"],
+                reviewed_flags=["silence"],
+                date_source="detected",
             ),
         ]
 
@@ -261,6 +264,9 @@ class TestVideoJob:
             assert scene.event_name == "プール"
             assert scene.event_date == date(2024, 8, 1)
             assert scene.filename_override == "private"
+            assert scene.analysis_flags == ["silence"]
+            assert scene.reviewed_flags == ["silence"]
+            assert scene.date_source == "detected"
 
     def test_rebuild_scenes_merge_uses_safest_combined_state(self):
         """異なる安全属性をまたぐ再構築では除外・要注意を安全側へ倒す"""

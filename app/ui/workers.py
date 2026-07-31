@@ -11,6 +11,11 @@ from typing import Optional
 
 from app.core import VideoJob, JobStatus, FFmpegRunner, Exporter
 from app.core.scene_detector import SceneDetectionSettings, detect_scene_boundaries
+from app.core.export_presets import get_export_preset
+from app.core.media_signal_detector import (
+    build_media_signal_result,
+    detect_fade_times,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -57,6 +62,127 @@ class ThumbnailWorker(QObject):
                     self.thumbnail_ready.emit(scene.index, str(thumb_path))
         except Exception:
             logger.exception("サムネイル生成中にエラー: %s", self.job.source_path)
+        finally:
+            self.finished.emit()
+
+
+class BoundaryPreviewWorker(QObject):
+    """境界の直前・直後フレームをバックグラウンドで用意する。"""
+
+    preview_ready = Signal(float, str, str)
+    error = Signal(str)
+    finished = Signal()
+
+    def __init__(
+        self,
+        job: VideoJob,
+        boundary_time: float,
+        duration: float,
+        temp_dir: Path,
+        ffmpeg=None,
+    ):
+        super().__init__()
+        self.job = job
+        self.boundary_time = float(boundary_time)
+        self.duration = float(duration)
+        self.temp_dir = Path(temp_dir)
+        self.ffmpeg = ffmpeg or FFmpegRunner()
+        self._cancelled = False
+
+    def cancel(self):
+        self._cancelled = True
+        self.ffmpeg.cancel()
+
+    def run(self):
+        try:
+            preview_dir = self.temp_dir / f"job_{self.job.id}" / "boundaries"
+            preview_dir.mkdir(parents=True, exist_ok=True)
+            key = int(self.boundary_time * 1000)
+            before_path = preview_dir / f"boundary_{key:010d}_before.jpg"
+            after_path = preview_dir / f"boundary_{key:010d}_after.jpg"
+            before_time = max(0.0, self.boundary_time - 0.25)
+            after_time = min(self.duration, self.boundary_time + 0.25)
+
+            before_ok = before_path.exists() or self.ffmpeg.generate_thumbnail(
+                self.job.source_path, before_time, before_path, width=320
+            )
+            if self._cancelled:
+                return
+            after_ok = after_path.exists() or self.ffmpeg.generate_thumbnail(
+                self.job.source_path, after_time, after_path, width=320
+            )
+            if self._cancelled:
+                return
+            if before_ok and after_ok:
+                self.preview_ready.emit(
+                    self.boundary_time, str(before_path), str(after_path)
+                )
+            else:
+                self.error.emit("境界の前後画像を生成できませんでした")
+        except Exception as exc:
+            self.error.emit(f"境界確認エラー: {exc}")
+        finally:
+            self.finished.emit()
+
+
+class MediaSignalWorker(QObject):
+    """無音とフェードを解析し、未適用の境界候補として返す。"""
+
+    progress = Signal(str)
+    progress_percent = Signal(int)
+    analysis_complete = Signal(object)
+    error = Signal(str)
+    finished = Signal()
+
+    def __init__(
+        self,
+        job: VideoJob,
+        duration: float,
+        ffmpeg=None,
+        fade_detector=None,
+    ):
+        super().__init__()
+        self.job = job
+        self.duration = float(duration)
+        self.ffmpeg = ffmpeg or FFmpegRunner()
+        self.fade_detector = fade_detector or detect_fade_times
+        self._cancelled = False
+
+    def cancel(self):
+        self._cancelled = True
+        self.ffmpeg.cancel()
+
+    def run(self):
+        try:
+            self.progress.emit("音声の無音区間を解析中…")
+            self.progress_percent.emit(0)
+            silence_ranges = self.ffmpeg.detect_silence(
+                self.job.source_path, self.duration
+            )
+            if self._cancelled:
+                return
+            self.progress.emit("映像のフェードを解析中…")
+            self.progress_percent.emit(50)
+            fade_times = self.fade_detector(
+                self.job.source_path,
+                self.duration,
+                cancel_callback=lambda: self._cancelled,
+                progress_callback=lambda percent: self.progress_percent.emit(
+                    50 + int(percent / 2)
+                ),
+            )
+            if self._cancelled:
+                return
+            result = build_media_signal_result(
+                [scene.start_time for scene in self.job.scenes],
+                self.duration,
+                silence_ranges,
+                fade_times,
+            )
+            self.progress_percent.emit(100)
+            self.analysis_complete.emit(result)
+        except Exception as exc:
+            self.error.emit(f"音声・フェード解析エラー: {exc}")
         finally:
             self.finished.emit()
 
@@ -271,7 +397,12 @@ class ExportWorker(QObject):
     export_complete = Signal(object)  # VideoJob
     error = Signal(str)
 
-    def __init__(self, job: VideoJob, output_dir: Path, auto_split: bool = True):
+    def __init__(
+        self,
+        job: VideoJob,
+        output_dir: Path,
+        export_preset: Optional[str] = None,
+    ):
         super().__init__()
         self.job = job
         # 書き出し開始後のUI編集が出力内容へ混入しないよう固定する。
@@ -280,7 +411,12 @@ class ExportWorker(QObject):
         self._cancelled = False
 
         self.ffmpeg = FFmpegRunner()
-        self.exporter = Exporter(self.ffmpeg, auto_split=auto_split)
+        preset = get_export_preset(export_preset or job.export_preset)
+        self.exporter = Exporter(
+            self.ffmpeg,
+            auto_split=preset.auto_split,
+            use_copy=preset.use_copy,
+        )
 
     def cancel(self):
         self._cancelled = True

@@ -16,6 +16,8 @@ def test_session_round_trip_restores_queue_and_editable_state(tmp_path):
     job.default_event_date = date(1998, 8, 12)
     job.output_dir = output
     job.auto_split_enabled = False
+    job.export_preset = "exact"
+    job.suggested_boundaries = [3.5, 8.25]
     job.needs_post_process = True
     job.scenes = [
         Scene(
@@ -27,6 +29,9 @@ def test_session_round_trip_restores_queue_and_editable_state(tmp_path):
             event_name="海辺",
             event_date=date(1998, 8, 13),
             filename_override="海辺_01",
+            analysis_flags=["silence", "fade"],
+            reviewed_flags=["fade"],
+            date_source="inferred",
         )
     ]
 
@@ -43,6 +48,8 @@ def test_session_round_trip_restores_queue_and_editable_state(tmp_path):
     assert loaded.default_event_date == date(1998, 8, 12)
     assert loaded.output_dir == output
     assert loaded.auto_split_enabled is False
+    assert loaded.export_preset == "exact"
+    assert loaded.suggested_boundaries == [3.5, 8.25]
     assert loaded.needs_post_process is True
     assert loaded.scenes == [
         Scene(
@@ -54,6 +61,9 @@ def test_session_round_trip_restores_queue_and_editable_state(tmp_path):
             event_name="海辺",
             event_date=date(1998, 8, 13),
             filename_override="海辺_01",
+            analysis_flags=["silence", "fade"],
+            reviewed_flags=["fade"],
+            date_source="inferred",
         )
     ]
 
