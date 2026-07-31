@@ -61,7 +61,7 @@ class MergeProposalDialog(QDialog):
         button_layout = QHBoxLayout()
         button_layout.addStretch()
 
-        self.btn_skip = QPushButton("キャンセル")
+        self.btn_skip = QPushButton("結合しない")
         self.btn_skip.clicked.connect(self.reject)
         button_layout.addWidget(self.btn_skip)
 

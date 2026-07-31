@@ -32,6 +32,12 @@ def test_batch_progress_dialog_cancel_and_finish_states():
     requested = []
     dialog.cancel_requested.connect(lambda: requested.append(True))
 
+    assert dialog.btn_close.text() == "バックグラウンドで続ける"
+    assert dialog.btn_close.isEnabled() is True
+    dialog.show()
+    dialog.btn_close.click()
+    assert dialog.isHidden() is True
+
     dialog._on_cancel_clicked()
 
     assert requested == [True]
@@ -43,5 +49,6 @@ def test_batch_progress_dialog_cancel_and_finish_states():
     assert dialog.current_label.text() == "一括検出完了"
     assert dialog.progress_bar.value() == 100
     assert dialog.btn_close.isEnabled() is True
+    assert dialog.btn_close.text() == "閉じる"
 
     dialog.close()

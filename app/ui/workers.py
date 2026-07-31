@@ -160,7 +160,7 @@ class BatchSceneDetectionWorker(QObject):
 
                 job.rebuild_scenes_from_boundaries(boundaries, duration)
                 job.status = JobStatus.REVIEW
-                # 開いたときに後処理（つなぎ目→結合→日付）を自動実行させる
+                # 開いたときに日付検出などの仕上げ処理を実行させる
                 job.needs_post_process = True
                 self.video_done.emit(job.id, len(job.scenes))
                 self.progress_percent.emit(int((i + 1) / total * 100) if total else 100)

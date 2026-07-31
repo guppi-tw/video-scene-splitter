@@ -236,6 +236,72 @@ def test_recommended_action_moves_from_detection_to_export(tmp_path):
     clips.close()
 
 
+def test_scene_detection_finishes_without_opening_correction_modals(tmp_path):
+    _app()
+    source = tmp_path / "no-modal-chain.mp4"
+    source.touch()
+    job = VideoJob(
+        id=1,
+        source_path=source,
+        status=JobStatus.REVIEW,
+        scenes=[Scene(index=1, start_time=0.0, end_time=8.0)],
+    )
+    window = MainWindow()
+    window.current_job = job
+    window.clip_list_widget.set_job(job)
+    window.timeline_widget.set_scenes([0.0], 8.0)
+    calls = []
+    window._begin_deferred_thumbnails = lambda: calls.append("defer")
+    window._finish_scene_detection = lambda: calls.append("detect-finished")
+    window._start_blank_detection = lambda **_kwargs: calls.append("blank")
+    window._propose_short_scene_merge = lambda: calls.append("merge")
+    window._start_date_detection = lambda auto: calls.append(("date", auto)) or True
+    window._regenerate_thumbnails = lambda: None
+
+    window._on_scene_detection_complete([0.0, 4.0])
+
+    assert calls == ["defer", "detect-finished", ("date", True)]
+    assert "補正ツール" in window.log_widget.log_text.toPlainText()
+    window.close()
+
+
+def test_opening_batch_detected_video_does_not_start_modal_corrections(
+    monkeypatch, tmp_path
+):
+    _app()
+    source = tmp_path / "batch-detected.mp4"
+    source.touch()
+    job = VideoJob(
+        id=1,
+        source_path=source,
+        status=JobStatus.REVIEW,
+        scenes=[
+            Scene(index=1, start_time=0.0, end_time=4.0),
+            Scene(index=2, start_time=4.0, end_time=8.0),
+        ],
+        needs_post_process=True,
+    )
+    monkeypatch.setattr(
+        "app.ui.main_window.FFmpegRunner",
+        lambda: type("Runner", (), {"get_video_duration": lambda _self, _path: 8.0})(),
+    )
+    window = MainWindow()
+    calls = []
+    window._begin_deferred_thumbnails = lambda: calls.append("defer")
+    window._start_blank_detection = lambda **_kwargs: calls.append("blank")
+    window._propose_short_scene_merge = lambda: calls.append("merge")
+    window._start_date_detection = lambda auto: calls.append(("date", auto)) or True
+    window._regenerate_thumbnails = lambda: None
+    window.preview_widget.load_video = lambda _path: None
+
+    window._on_open_video(job)
+
+    assert calls == ["defer", ("date", True)]
+    assert job.needs_post_process is False
+    assert "補正ツール" in window.log_widget.log_text.toPlainText()
+    window.close()
+
+
 def test_merge_action_becomes_recommended_only_after_valid_selection(tmp_path):
     _app()
     source = tmp_path / "merge-recommendation.mp4"
@@ -348,13 +414,19 @@ def test_proposal_dialogs_keep_secondary_explanations_collapsed():
     merge = MergeProposalDialog([0.0, 1.0, 8.0], 10.0)
     blank = BlankCutDialog([(1.0, 2.0, "黒"), (4.0, 5.0, "青")])
 
-    assert merge.btn_skip.text() == "キャンセル"
+    assert merge.btn_skip.text() == "結合しない"
     assert not hasattr(merge, "intro_label")
     assert blank.detail_label.isHidden() is True
     assert blank.btn_toggle_detail.text() == "2区間を確認"
 
+    blank.show()
+    QApplication.processEvents()
+    collapsed_height = blank.height()
     blank.btn_toggle_detail.click()
+    QApplication.processEvents()
     assert blank.detail_label.isHidden() is False
+    assert blank.height() > collapsed_height
+    assert blank.height() >= blank.sizeHint().height()
     merge.close()
     blank.close()
 

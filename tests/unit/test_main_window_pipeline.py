@@ -23,13 +23,9 @@ class _ClipListStub:
         pass
 
 
-def _blank_finished_window(*, manual: bool, propose_merge: bool, segments: list):
+def _blank_finished_window(*, segments: list):
     worker = object()
     calls = []
-
-    def start_date_detection(auto):
-        calls.append(("date", auto))
-        return True
 
     window = SimpleNamespace(
         blank_detection_worker=worker,
@@ -37,41 +33,17 @@ def _blank_finished_window(*, manual: bool, propose_merge: bool, segments: list)
         log_widget=_LogStub(),
         clip_list_widget=_ClipListStub(),
         current_job=SimpleNamespace(filename="video.mp4"),
-        _blank_manual=manual,
         _pending_blank_segments=segments,
-        _propose_merge_after_blank=propose_merge,
         sender=lambda: worker,
     )
     window._apply_blank_segments = lambda found: calls.append(("blank", found))
-    window._propose_short_scene_merge = lambda: calls.append(("merge", None))
-    window._start_date_detection = start_date_detection
-    window._finish_deferred_thumbnails = lambda: calls.append(("thumbnails", None))
     return window, calls
 
 
-def test_auto_blank_finished_runs_blank_merge_date_in_order():
-    """自動実行時は つなぎ目除外 -> 結合提案 -> 日付検出 の順に固定する"""
-    segments = [(1.0, 2.0, "黒")]
-    window, calls = _blank_finished_window(
-        manual=False,
-        propose_merge=True,
-        segments=segments,
-    )
-
-    MainWindow._on_blank_detect_finished(window)
-
-    assert calls == [("blank", segments), ("merge", None), ("date", True)]
-    assert window._pending_blank_segments is None
-
-
 def test_manual_blank_finished_only_shows_blank_dialog():
-    """手動つなぎ目検出では、結合提案や日付検出へ連鎖しない"""
+    """つなぎ目検出は、選んだ補正以外のモーダルへ連鎖しない"""
     segments = [(3.0, 4.0, "青")]
-    window, calls = _blank_finished_window(
-        manual=True,
-        propose_merge=True,
-        segments=segments,
-    )
+    window, calls = _blank_finished_window(segments=segments)
 
     MainWindow._on_blank_detect_finished(window)
 
@@ -80,7 +52,7 @@ def test_manual_blank_finished_only_shows_blank_dialog():
 
 
 def test_queue_clip_preview_does_not_start_post_process_pipeline(tmp_path):
-    """子クリップ選択のプレビューでは、自動後処理モーダルを起動しない"""
+    """子クリップ選択のプレビューではバックグラウンド処理を起動しない"""
     video_path = tmp_path / "video.mp4"
     video_path.touch()
     job = VideoJob(id=1, source_path=video_path, status=JobStatus.REVIEW)
@@ -296,3 +268,30 @@ def test_detect_all_start_builds_batch_worker_without_open_video_state(monkeypat
 
     assert ("worker", [1], "settings") in calls
     assert "thread_start" in calls
+
+
+def test_detect_all_button_reopens_running_progress_without_warning(monkeypatch):
+    calls = []
+
+    class RunningThread:
+        def isRunning(self):
+            return True
+
+    dialog = SimpleNamespace(
+        show=lambda: calls.append("show"),
+        raise_=lambda: calls.append("raise"),
+        activateWindow=lambda: calls.append("activate"),
+    )
+    monkeypatch.setattr(
+        main_window_module.QMessageBox,
+        "warning",
+        lambda *_args, **_kwargs: calls.append("warning"),
+    )
+    window = SimpleNamespace(
+        batch_detection_thread=RunningThread(),
+        batch_progress_dialog=dialog,
+    )
+
+    MainWindow._on_detect_all_requested(window)
+
+    assert calls == ["show", "raise", "activate"]

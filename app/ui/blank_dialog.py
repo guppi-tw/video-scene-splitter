@@ -77,3 +77,5 @@ class BlankCutDialog(QDialog):
         self.btn_toggle_detail.setText(
             "区間を閉じる" if visible else f"{len(self._segments)}区間を確認"
         )
+        self.layout().activate()
+        self.adjustSize()

@@ -33,7 +33,7 @@ def job_status_badge(job: VideoJob) -> tuple[str, str, str]:
     if job.status == JobStatus.PROCESSING:
         return ("処理中", "#6a5523", "#f6e6b8")
     if job.needs_post_process:
-        return (f"後処理待ち / {scene_count}本", "#654a1f", "#ffe3a3")
+        return (f"確認待ち / {scene_count}本", "#654a1f", "#ffe3a3")
     if scene_count:
         return (f"確認中 / {scene_count}本", "#2d4a5a", "#d4e8f2")
     return ("未検出", "#3a3a3a", "#d4d4d4")
@@ -47,7 +47,7 @@ def next_open_action_text(job: VideoJob) -> str:
     if job.status == JobStatus.DONE:
         return "この動画は書き出し済みです。選択中の内容を確認できます。"
     if job.needs_post_process:
-        return "開くと: つなぎ目検出 -> 結合提案 -> 日付検出"
+        return "開くと: 検出済みクリップを表示し、日付検出をバックグラウンドで行います"
     if job.scenes:
         return "開くと: 検出済みクリップを確認・編集できます"
     return "開くと: 動画全体を1シーンとして読み込みます"
@@ -172,17 +172,19 @@ class QueueWidget(QWidget):
             self.btn_open.setText("編集開始")
         else:
             self.btn_open.setText("開く")
-        self.btn_detect_all.setEnabled(self._detect_all_available and waiting_count > 0)
-        self.btn_detect_all.setText(
-            f"一括検出 ({waiting_count})" if waiting_count else "一括検出"
-        )
         if not self._detect_all_available:
-            self.btn_detect_all.setToolTip("一括検出を実行中です")
+            self.btn_detect_all.setEnabled(True)
+            self.btn_detect_all.setText("進捗を表示")
+            self.btn_detect_all.setToolTip("実行中の一括検出の進捗画面を表示します")
         elif waiting_count:
+            self.btn_detect_all.setEnabled(True)
+            self.btn_detect_all.setText(f"一括検出 ({waiting_count})")
             self.btn_detect_all.setToolTip(
                 f"待機中の動画 {waiting_count} 本をまとめてシーン検出します"
             )
         else:
+            self.btn_detect_all.setEnabled(False)
+            self.btn_detect_all.setText("一括検出")
             self.btn_detect_all.setToolTip("待機中の動画がありません")
 
     def dragEnterEvent(self, event):

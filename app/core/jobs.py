@@ -123,7 +123,7 @@ class VideoJob:
     output_dir: Optional[Path] = None
     auto_split_enabled: bool = True
     error_message: str = ""
-    # 一括検出で分割だけ済み、開いたときに後処理（つなぎ目→結合→日付）が必要
+    # 一括検出で分割済み。開いたときに日付検出などの仕上げ処理が必要
     needs_post_process: bool = False
     
     @property

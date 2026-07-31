@@ -62,9 +62,9 @@ class BatchProgressDialog(QDialog):
         self.btn_cancel.clicked.connect(self._on_cancel_clicked)
         button_layout.addWidget(self.btn_cancel)
 
-        self.btn_close = QPushButton("閉じる")
-        self.btn_close.clicked.connect(self.accept)
-        self.btn_close.setEnabled(False)
+        self.btn_close = QPushButton("バックグラウンドで続ける")
+        self.btn_close.setToolTip("進捗画面を隠しても一括検出は続きます")
+        self.btn_close.clicked.connect(self._on_close_clicked)
         button_layout.addWidget(self.btn_close)
 
         layout.addLayout(button_layout)
@@ -91,11 +91,19 @@ class BatchProgressDialog(QDialog):
         self.progress_bar.setValue(100)
         self.btn_cancel.setEnabled(False)
         self.btn_close.setEnabled(True)
+        self.btn_close.setText("閉じる")
+        self.btn_close.setToolTip("進捗画面を閉じます")
         self.btn_close.setDefault(True)
 
     def _on_cancel_clicked(self):
         self.set_cancelling()
         self.cancel_requested.emit()
+
+    def _on_close_clicked(self):
+        if self._running:
+            self.hide()
+        else:
+            self.accept()
 
     def closeEvent(self, event):
         if self._running:

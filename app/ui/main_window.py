@@ -80,8 +80,6 @@ class MainWindow(QMainWindow):
         self._date_detect_auto = False
         self.blank_detection_thread: QThread = None
         self.blank_detection_worker: BlankDetectionWorker = None
-        self._propose_merge_after_blank = False
-        self._blank_manual = False
         self._pending_blank_segments: Optional[list] = None
         self.batch_detection_thread: QThread = None
         self.batch_detection_worker: BatchSceneDetectionWorker = None
@@ -372,8 +370,8 @@ class MainWindow(QMainWindow):
     def _on_queue_clip_preview(self, job: VideoJob, start_time: float):
         """キューのツリーでクリップを選んだとき、その動画を表示して頭出しする。
 
-        これはプレビュー操作なので、needs_post_process の自動後処理モーダルは
-        起動しない。後処理は動画行のダブルクリックなど、明示的に開いた時だけ行う。
+        これはプレビュー操作なので、needs_post_process のバックグラウンド処理は
+        起動しない。処理は動画を明示的に開いた時だけ行う。
         """
         if self.current_job is not job:
             self._on_job_selected(job)
@@ -382,7 +380,10 @@ class MainWindow(QMainWindow):
     def _on_detect_all_requested(self):
         """待機中の全動画にシーン検出を一括実行"""
         if self.batch_detection_thread and self.batch_detection_thread.isRunning():
-            QMessageBox.warning(self, "警告", "一括検出を実行中です")
+            if self.batch_progress_dialog:
+                self.batch_progress_dialog.show()
+                self.batch_progress_dialog.raise_()
+                self.batch_progress_dialog.activateWindow()
             return
 
         jobs = [j for j in self.job_queue.get_all_jobs() if j.status == JobStatus.WAITING]
@@ -501,8 +502,8 @@ class MainWindow(QMainWindow):
             )
             return
 
-        will_auto_post_process = job.needs_post_process
-        if will_auto_post_process:
+        will_finish_detection = job.needs_post_process
+        if will_finish_detection:
             self._begin_deferred_thumbnails()
 
         self.log_widget.append_log(f"動画の長さ: {format_seconds(duration)}")
@@ -537,12 +538,13 @@ class MainWindow(QMainWindow):
                 "「分割 [S]」ボタンまたはタイムライン右クリックで境界を追加"
             )
 
-        # 一括検出で分割だけ済んだ動画は、開いたときに
-        # つなぎ目カット → 結合提案 → 日付検出 を自動で走らせる
+        # 一括検出済みの動画も補正モーダルでは遮らず、日付検出だけ裏で続ける。
         if job.needs_post_process:
             job.needs_post_process = False
-            self._propose_merge_after_blank = len(job.scenes) > 1
-            if not self._start_blank_detection(manual=False):
+            self.log_widget.append_log(
+                "必要に応じて「補正ツール」からつなぎ目除外や結合を確認できます"
+            )
+            if not self._start_date_detection(auto=True):
                 self._finish_deferred_thumbnails()
         self._schedule_autosave()
 
@@ -749,16 +751,17 @@ class MainWindow(QMainWindow):
         self.log_widget.set_status(f"編集中: {self.current_job.filename}")
         self._finish_scene_detection()
 
-        # 検出後の自動パイプライン:
-        #   つなぎ目(単色)検出 → 統合提案 → 日付検出
-        # つなぎ目検出が終わってから統合提案・日付検出へ連鎖する
-        self._propose_merge_after_blank = added_count > 0
-        if not self._start_blank_detection(manual=False):
+        # 補正候補で作業を遮らない。つなぎ目除外・短いシーンの結合は
+        # 必要なときだけ「補正ツール」から起動し、日付検出だけ裏で続ける。
+        self.log_widget.append_log(
+            "必要に応じて「補正ツール」からつなぎ目除外や結合を確認できます"
+        )
+        if not self._start_date_detection(auto=True):
             self._finish_deferred_thumbnails()
 
     def _on_blank_detect_requested(self):
         """クリップ一覧から手動でつなぎ目検出を開始"""
-        self._start_blank_detection(manual=True)
+        self._start_blank_detection()
 
     def _on_blank_detect_cancel(self):
         """つなぎ目検出の中止リクエスト"""
@@ -766,20 +769,15 @@ class MainWindow(QMainWindow):
             self.blank_detection_worker.cancel()
             self.log_widget.append_log("つなぎ目検出を中止しています...")
 
-    def _start_blank_detection(self, manual: bool):
-        """単色つなぎ目シーンの検出を開始
-
-        manual=False（自動）の場合のみ、完了後に統合提案・日付検出へ連鎖する。
-        """
+    def _start_blank_detection(self):
+        """補正ツールから単色つなぎ目シーンの検出を開始する。"""
         if not self.current_job or not self.current_job.scenes:
             return False
 
         if self.blank_detection_thread and self.blank_detection_thread.isRunning():
-            if manual:
-                QMessageBox.warning(self, "警告", "つなぎ目検出を実行中です")
+            QMessageBox.warning(self, "警告", "つなぎ目検出を実行中です")
             return False
 
-        self._blank_manual = manual
         self._pending_blank_segments = None
         self.log_widget.append_log("つなぎ目（単色）を検出中...")
         self.log_widget.set_status("つなぎ目検出中")
@@ -806,10 +804,7 @@ class MainWindow(QMainWindow):
     def _on_blank_detect_complete(self, segments: list):
         """つなぎ目検出の結果を受け取る（保持のみ）。
 
-        ここでモーダルを開くと、続けてキューされる finished シグナルが
-        その exec() のネストイベントループ中に走り、結合提案モーダルが
-        つなぎ目モーダルより先に重なって出てしまう。実際の表示・連鎖は
-        スレッド片付け後の _on_blank_detect_finished で一直線に行う。
+        ワーカースレッドを片付けてから確認画面を出せるよう、ここでは保持する。
         """
         self._pending_blank_segments = segments
 
@@ -862,11 +857,7 @@ class MainWindow(QMainWindow):
         self.log_widget.append_log(f"[ERROR] {message}")
 
     def _on_blank_detect_finished(self):
-        """スレッドを片付けてから、つなぎ目除外→結合提案→日付検出を順に行う。
-
-        全モーダルをこの1スロット内で逐次実行することで、表示順を保証する
-        （つなぎ目ダイアログ → 結合提案ダイアログ）。
-        """
+        """スレッドを片付けてから、選ばれたつなぎ目補正だけを確認する。"""
         if self.sender() is not self.blank_detection_worker:
             return
         self.log_widget.hide_progress()
@@ -879,23 +870,12 @@ class MainWindow(QMainWindow):
         if self.current_job:
             self.log_widget.set_status(f"編集中: {self.current_job.filename}")
 
-        manual = self._blank_manual
         segments = self._pending_blank_segments
         self._pending_blank_segments = None
 
-        # 1) つなぎ目（単色）の除外提案
+        # ユーザーが補正ツールから選んだ処理だけを完了し、別の提案へ連鎖しない。
         if segments:
             self._apply_blank_segments(segments)
-
-        # 手動起動時はここで完了（連鎖しない）
-        if manual:
-            return
-
-        # 自動実行時のみ: 2) 結合提案 → 3) 日付検出
-        if getattr(self, "_propose_merge_after_blank", False):
-            self._propose_short_scene_merge()
-        if not self._start_date_detection(auto=True):
-            self._finish_deferred_thumbnails()
 
     def _protected_boundaries_from_clip_state(self) -> List[float]:
         """公開可否や出力設定が変わる境界を自動結合から保護する。"""
@@ -924,8 +904,8 @@ class MainWindow(QMainWindow):
                     protected.add(scene.end_time)
         return sorted(protected)
 
-    def _propose_short_scene_merge(self, manual: bool = False):
-        """短いシーンが残っていれば結合を提案する（manual=Trueで手動起動）"""
+    def _propose_short_scene_merge(self):
+        """補正ツールから、短いシーンが残っていれば結合を提案する。"""
         if not self.current_job or not self.current_job.scenes:
             return
 
@@ -936,12 +916,11 @@ class MainWindow(QMainWindow):
         # 検出設定の最小シーン長より少し広めの初期値で提案する
         initial = max(3.0, self.timeline_widget.min_scene_spin.value())
         if len(absorb_short_scenes(boundaries, duration, initial, protected)) >= len(boundaries):
-            if manual:
-                QMessageBox.information(
-                    self, "短いシーンの結合",
-                    "この長さで結合できる短いシーンはありませんでした。\n"
-                    "（提案ダイアログで秒数を上げても確認できます）"
-                )
+            QMessageBox.information(
+                self, "短いシーンの結合",
+                "この長さで結合できる短いシーンはありませんでした。\n"
+                "（設定の最小シーン長を上げてから、もう一度確認できます）"
+            )
             return
 
         dialog = MergeProposalDialog(
@@ -959,7 +938,7 @@ class MainWindow(QMainWindow):
         if not self.current_job or not self.current_job.scenes:
             QMessageBox.information(self, "短いシーンの結合", "先に動画を開いてください。")
             return
-        self._propose_short_scene_merge(manual=True)
+        self._propose_short_scene_merge()
 
     def _on_scene_detection_error(self, message: str):
         """シーン自動検出エラー"""
