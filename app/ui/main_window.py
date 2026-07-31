@@ -1271,16 +1271,19 @@ class MainWindow(QMainWindow):
             QPushButton#btn_split:hover {
                 background-color: #3a7a3a;
             }
-            QPushButton#btn_export {
+            QPushButton#btn_export,
+            QPushButton[recommended="true"] {
                 background-color: #2d4a7a;
                 border-color: #4a7abc;
                 font-weight: bold;
             }
-            QPushButton#btn_export:hover {
+            QPushButton#btn_export:hover,
+            QPushButton[recommended="true"]:hover {
                 background-color: #3a5a8a;
             }
             QPushButton#btn_split:disabled,
-            QPushButton#btn_export:disabled {
+            QPushButton#btn_export:disabled,
+            QPushButton[recommended="true"]:disabled {
                 background-color: #2a2a2a;
                 color: #666;
                 border-color: #444;

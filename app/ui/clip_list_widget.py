@@ -13,8 +13,9 @@ from PySide6.QtWidgets import (
 from PySide6.QtCore import Qt, Signal, QDate, QEvent
 from PySide6.QtGui import QMouseEvent, QPixmap
 
-from app.core.jobs import VideoJob, Scene, Clip
+from app.core.jobs import VideoJob, Scene, Clip, JobStatus
 from app.core.time_format import format_seconds
+from app.ui.style_helpers import set_recommended_action
 
 
 class ClickableLabel(QLabel):
@@ -190,10 +191,14 @@ class ClipRow(QFrame):
         check_layout.addWidget(self.keep_check)
 
         # 要注意チェックボックス
-        self.sensitive_check = QCheckBox("別フォルダ")
+        self.sensitive_check = QCheckBox("要確認")
         self.sensitive_check.setMinimumWidth(72)
-        self.sensitive_check.setToolTip("要確認のクリップとして別フォルダへ書き出します")
-        self.sensitive_check.setAccessibleName("要確認として別フォルダへ書き出す")
+        self.sensitive_check.setToolTip(
+            "要確認のクリップとして専用フォルダへ分けて書き出します"
+        )
+        self.sensitive_check.setAccessibleName(
+            "要確認として専用フォルダへ分けて書き出す"
+        )
         self.sensitive_check.setChecked(self.scene.is_sensitive)
         self.sensitive_check.setEnabled(self.scene.keep)
         self.sensitive_check.stateChanged.connect(self._on_sensitive_changed)
@@ -412,7 +417,7 @@ class ClipListWidget(QWidget):
         action_layout.setSpacing(4)
 
         self._blank_detecting = False
-        self.btn_postprocess = QPushButton("自動補正")
+        self.btn_postprocess = QPushButton("補正ツール")
         post_menu = QMenu(self.btn_postprocess)
         self.btn_blank_detect = post_menu.addAction("つなぎ目を検出")
         self.btn_blank_detect.setToolTip("単色（青/黒/白）のつなぎ目を検出して除外提案を出します")
@@ -473,7 +478,6 @@ class ClipListWidget(QWidget):
         self.keep_all_check.stateChanged.connect(self._on_keep_all_toggled)
 
         self.btn_export = QPushButton("書き出し")
-        self.btn_export.setObjectName("btn_export")
         self.btn_export.clicked.connect(self._on_export)
 
         export_layout = QHBoxLayout()
@@ -540,6 +544,15 @@ class ClipListWidget(QWidget):
             self.btn_export.setEnabled(not self._export_cancelling)
         else:
             self.btn_export.setEnabled(has_job and kept and not busy)
+        set_recommended_action(
+            self.btn_export,
+            has_job
+            and scene_count > 1
+            and kept
+            and not busy
+            and not self._merge_mode
+            and self.current_job.status == JobStatus.REVIEW,
+        )
         self.btn_short_merge.setEnabled(has_job and scene_count > 1 and not busy)
 
         if self._blank_detecting:
@@ -645,7 +658,7 @@ class ClipListWidget(QWidget):
         self.merge_bar.setVisible(enabled)
         for row in self._clip_rows:
             row.set_merge_mode(enabled)
-        self._update_merge_button()
+        self._update_action_state()
 
     def update_thumbnail(self, scene_index: int, path: str):
         """特定クリップのサムネイルを更新"""
@@ -714,6 +727,7 @@ class ClipListWidget(QWidget):
     def _update_merge_button(self):
         """選択状態に応じて結合ボタンとヒントを更新"""
         selected = self._selected_scene_indexes()
+        set_recommended_action(self.btn_merge, False)
 
         if not selected:
             self.merge_hint_label.setText("チェックで結合対象を選択")
@@ -740,6 +754,7 @@ class ClipListWidget(QWidget):
                 f"#{selected[0]}〜#{selected[-1]} の {len(selected)}件を結合"
             )
             self.btn_merge.setEnabled(True)
+            set_recommended_action(self.btn_merge, self._merge_mode)
 
     def _selected_scenes_are_merge_compatible(self, indexes: list[int]) -> bool:
         """結合で公開可否や出力メタデータが暗黙に変わらないか確認する"""
@@ -882,9 +897,9 @@ class ClipListWidget(QWidget):
             self,
             "書き出し確認",
             f"書き出し対象: {len(kept)}個\n"
-            f"別フォルダへ出力: {sensitive_count}個\n"
+            f"要確認として分ける: {sensitive_count}個\n"
             f"出力先: {output_dir}\n\n"
-            f"要確認クリップは sensitive フォルダへ分けて出力されます。\n"
+            f"要確認クリップは専用フォルダへ分けて出力されます。\n"
             f"書き出しを開始しますか？",
             QMessageBox.Yes | QMessageBox.No
         )

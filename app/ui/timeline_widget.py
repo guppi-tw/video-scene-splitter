@@ -14,6 +14,7 @@ from PySide6.QtGui import QPainter, QColor, QPen, QBrush, QMouseEvent, QFont
 
 from app.core.scene_detector import SceneDetectionSettings
 from app.core.time_format import format_seconds
+from app.ui.style_helpers import set_recommended_action
 
 
 def _same_times(left: List[float], right: List[float], tolerance: float = 1e-6) -> bool:
@@ -449,6 +450,7 @@ class TimelineWidget(QWidget):
         self.btn_reset.setEnabled(True)
         self.btn_auto_detect.setEnabled(True)
         self.btn_settings.setEnabled(True)
+        self._sync_recommended_action()
 
     def clear(self):
         """タイムラインを空にする"""
@@ -460,6 +462,7 @@ class TimelineWidget(QWidget):
         self.btn_reset.setEnabled(False)
         self.btn_auto_detect.setEnabled(False)
         self.btn_settings.setEnabled(False)
+        self._sync_recommended_action()
 
     def add_boundary(self, time: float):
         """境界を追加する（公開API）"""
@@ -483,11 +486,13 @@ class TimelineWidget(QWidget):
         self.scene_start_times = normalized
         self.timeline_bar.set_boundaries(normalized)
         self.btn_reset.setEnabled(True)
+        self._sync_recommended_action()
         self._emit_changes()
 
     def set_auto_detect_enabled(self, enabled: bool):
         """自動検出ボタンの有効状態を設定"""
         self.btn_auto_detect.setEnabled(enabled and self.duration > 0)
+        self._sync_recommended_action()
 
     def set_detecting(self, detecting: bool):
         """検出中の表示状態を切り替える（検出中はボタンが「中止」になる）"""
@@ -505,6 +510,16 @@ class TimelineWidget(QWidget):
         self.threshold_spin.setEnabled(not detecting)
         self.min_scene_spin.setEnabled(not detecting)
         self.btn_settings.setEnabled(self.duration > 0 and not detecting)
+        self._sync_recommended_action()
+
+    def _sync_recommended_action(self):
+        set_recommended_action(
+            self.btn_auto_detect,
+            self.duration > 0
+            and len(self.scene_start_times) <= 1
+            and not self._detecting
+            and self.btn_auto_detect.isEnabled(),
+        )
 
     def _on_auto_detect_clicked(self):
         if self._detecting:
@@ -586,4 +601,5 @@ class TimelineWidget(QWidget):
     
     def _emit_changes(self):
         """変更をシグナルで通知"""
+        self._sync_recommended_action()
         self.boundaries_changed.emit(self.get_boundaries())

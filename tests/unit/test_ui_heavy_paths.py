@@ -177,8 +177,9 @@ def test_clip_editor_hides_low_frequency_controls_until_needed(tmp_path):
     assert row.filename_label.isHidden() is False
     assert row.filename_label.focusPolicy() == Qt.StrongFocus
     assert row.keep_check.text() == "書き出す"
-    assert row.sensitive_check.text() == "別フォルダ"
-    assert widget.btn_postprocess.text() == "自動補正"
+    assert row.sensitive_check.text() == "要確認"
+    assert "専用フォルダ" in row.sensitive_check.toolTip()
+    assert widget.btn_postprocess.text() == "補正ツール"
 
     widget.show()
     QApplication.processEvents()
@@ -193,6 +194,76 @@ def test_clip_editor_hides_low_frequency_controls_until_needed(tmp_path):
     widget.btn_merge_mode.click()
     assert row.select_check.isHidden() is False
     assert row.settings_widget.isHidden() is True
+    widget.close()
+
+
+def test_recommended_action_moves_from_detection_to_export(tmp_path):
+    _app()
+    source = tmp_path / "recommended-action.mp4"
+    source.touch()
+    job = VideoJob(
+        id=1,
+        source_path=source,
+        status=JobStatus.REVIEW,
+        scenes=[Scene(index=1, start_time=0.0, end_time=8.0)],
+    )
+    timeline = TimelineWidget()
+    clips = ClipListWidget()
+
+    timeline.set_scenes([0.0], 8.0)
+    clips.set_job(job)
+
+    assert timeline.btn_auto_detect.property("recommended") is True
+    assert timeline.btn_auto_detect.accessibleDescription() == "おすすめの次の操作"
+    assert clips.btn_export.property("recommended") is False
+
+    timeline.set_auto_detect_enabled(False)
+    assert timeline.btn_auto_detect.property("recommended") is False
+    timeline.set_auto_detect_enabled(True)
+    assert timeline.btn_auto_detect.property("recommended") is True
+
+    job.scenes = [
+        Scene(index=1, start_time=0.0, end_time=4.0),
+        Scene(index=2, start_time=4.0, end_time=8.0),
+    ]
+    timeline.set_scenes([0.0, 4.0], 8.0)
+    clips.refresh_clips()
+
+    assert timeline.btn_auto_detect.property("recommended") is False
+    assert clips.btn_export.property("recommended") is True
+    assert clips.btn_export.accessibleDescription() == "おすすめの次の操作"
+    timeline.close()
+    clips.close()
+
+
+def test_merge_action_becomes_recommended_only_after_valid_selection(tmp_path):
+    _app()
+    source = tmp_path / "merge-recommendation.mp4"
+    source.touch()
+    job = VideoJob(
+        id=1,
+        source_path=source,
+        status=JobStatus.REVIEW,
+        scenes=[
+            Scene(index=1, start_time=0.0, end_time=4.0),
+            Scene(index=2, start_time=4.0, end_time=8.0),
+        ],
+    )
+    widget = ClipListWidget()
+    widget.set_job(job)
+
+    assert widget.btn_export.property("recommended") is True
+    widget.btn_merge_mode.click()
+
+    assert widget.btn_export.property("recommended") is False
+    assert widget.btn_merge.property("recommended") is False
+
+    widget._clip_rows[0].select_check.click()
+    widget._clip_rows[1].select_check.click()
+
+    assert widget.btn_merge.isEnabled() is True
+    assert widget.btn_merge.property("recommended") is True
+    assert widget.btn_merge.accessibleDescription() == "おすすめの次の操作"
     widget.close()
 
 
