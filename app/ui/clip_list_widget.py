@@ -16,7 +16,9 @@ from PySide6.QtGui import QMouseEvent, QPixmap
 from app.core.jobs import VideoJob, Scene, Clip, JobStatus
 from app.core.export_presets import EXPORT_PRESETS, get_export_preset
 from app.core.review import (
+    DATE_REVIEW_CODES,
     acknowledge_review_issues,
+    clear_date_review_acknowledgements,
     pending_review_count,
     pending_review_issues,
 )
@@ -76,6 +78,7 @@ class ClipRow(QFrame):
     preview_requested = Signal(float)  # start_time
     selection_changed = Signal(int, bool)  # scene_index, selected
     review_acknowledged = Signal(int)  # scene_index
+    date_changed = Signal(int, object)  # scene_index, date | None
     edit_started = Signal()
 
     def __init__(self, scene: Scene, job: VideoJob):
@@ -83,9 +86,15 @@ class ClipRow(QFrame):
         self.scene = scene
         self.job = job
         self._pending_issues = pending_review_issues(job, scene)
+        self._has_date_issue = any(
+            issue.code in DATE_REVIEW_CODES
+            for issue in self._pending_issues
+        )
         self._editing_enabled = True
         self.setFrameShape(QFrame.StyledPanel)
-        self.setFixedHeight(88 if self._pending_issues else 70)
+        self.setFixedHeight(
+            112 if self._has_date_issue else (88 if self._pending_issues else 70)
+        )
         self.setFocusPolicy(Qt.StrongFocus)
         self.setAccessibleName(f"シーン {scene.index}")
         self._setup_ui()
@@ -186,16 +195,53 @@ class ClipRow(QFrame):
         self.filename_stack.setCurrentWidget(self.filename_label)
         info_layout.addWidget(self.filename_container)
 
+        review_line = QHBoxLayout()
+        review_line.setContentsMargins(0, 0, 0, 0)
+        review_line.setSpacing(5)
         self.review_label = QLabel()
         self.review_label.setStyleSheet("font-size: 10px; color: #ffd27a;")
         self.review_label.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
         if self._pending_issues:
             review_text = "・".join(issue.label for issue in self._pending_issues)
-            self.review_label.setText(f"確認: {review_text}")
+            self.review_label.setText(review_text)
             self.review_label.setToolTip(review_text)
         else:
             self.review_label.hide()
-        info_layout.addWidget(self.review_label)
+        review_line.addWidget(self.review_label, stretch=1)
+
+        self.btn_edit_review_date = QPushButton("日付を修正")
+        self.btn_edit_review_date.setToolTip(
+            "映像の日付表示と照合し、このクリップの日付を修正します"
+        )
+        self.btn_edit_review_date.setAccessibleName(
+            f"シーン {self.scene.index} の日付を修正"
+        )
+        self.btn_edit_review_date.setVisible(self._has_date_issue)
+        self.btn_edit_review_date.clicked.connect(self._show_date_editor)
+        info_layout.addLayout(review_line)
+
+        self.date_editor_bar = QWidget()
+        date_editor_layout = QHBoxLayout(self.date_editor_bar)
+        date_editor_layout.setContentsMargins(0, 0, 0, 0)
+        date_editor_layout.setSpacing(5)
+        date_editor_layout.addWidget(QLabel("正しい日付"))
+        self.review_date_edit = OptionalDateEdit()
+        self.review_date_edit.setCalendarPopup(True)
+        _name, effective_date = self.job.get_scene_metadata(self.scene.index)
+        self.review_date_edit.set_optional_date(effective_date)
+        self.review_date_edit.setAccessibleName(
+            f"シーン {self.scene.index} の正しい日付"
+        )
+        self.review_date_edit.setToolTip("映像と照合した正しい日付を選択します")
+        date_editor_layout.addWidget(self.review_date_edit)
+        self.btn_apply_review_date = QPushButton("反映")
+        self.btn_apply_review_date.clicked.connect(self._apply_review_date)
+        date_editor_layout.addWidget(self.btn_apply_review_date)
+        self.btn_cancel_review_date = QPushButton("閉じる")
+        self.btn_cancel_review_date.clicked.connect(self._hide_date_editor)
+        date_editor_layout.addWidget(self.btn_cancel_review_date)
+        info_layout.addWidget(self.date_editor_bar)
+        self.date_editor_bar.hide()
 
         layout.addLayout(info_layout, stretch=1)
 
@@ -235,6 +281,7 @@ class ClipRow(QFrame):
             lambda: self.review_acknowledged.emit(self.scene.index)
         )
         check_layout.addWidget(self.btn_review_done)
+        check_layout.addWidget(self.btn_edit_review_date)
 
         layout.addWidget(self.settings_widget)
 
@@ -322,6 +369,35 @@ class ClipRow(QFrame):
     def _on_select_changed(self, state):
         self.selection_changed.emit(self.scene.index, state == Qt.Checked.value)
 
+    def _show_date_editor(self):
+        _name, effective_date = self.job.get_scene_metadata(self.scene.index)
+        self.review_date_edit.set_optional_date(effective_date)
+        self.btn_edit_review_date.hide()
+        self.date_editor_bar.show()
+        self.setFixedHeight(140)
+        self.review_date_edit.setFocus(Qt.OtherFocusReason)
+
+    def _hide_date_editor(self):
+        self.date_editor_bar.hide()
+        self.btn_edit_review_date.setVisible(self._has_date_issue)
+        self.setFixedHeight(
+            112 if self._has_date_issue else (88 if self._pending_issues else 70)
+        )
+
+    def _apply_review_date(self):
+        selected_date = self.review_date_edit.optional_date()
+        if (
+            self.scene.event_date == selected_date
+            and self.scene.date_source == ("manual" if selected_date else None)
+        ):
+            self._hide_date_editor()
+            return
+        self.edit_started.emit()
+        self.scene.event_date = selected_date
+        self.scene.date_source = "manual" if selected_date is not None else None
+        clear_date_review_acknowledgements(self.scene)
+        self.date_changed.emit(self.scene.index, selected_date)
+
     def is_selected(self) -> bool:
         return self.select_check.isChecked()
 
@@ -336,6 +412,10 @@ class ClipRow(QFrame):
         self.filename_stack.setCurrentWidget(self.filename_label)
         self.sensitive_check.setEnabled(enabled and self.scene.keep)
         self.btn_review_done.setEnabled(enabled)
+        self.btn_edit_review_date.setEnabled(enabled)
+        self.review_date_edit.setEnabled(enabled)
+        self.btn_apply_review_date.setEnabled(enabled)
+        self.btn_cancel_review_date.setEnabled(enabled)
 
     def set_merge_mode(self, enabled: bool):
         self.select_check.setVisible(enabled)
@@ -478,7 +558,7 @@ class ClipListWidget(QWidget):
         self.btn_date_detect = post_menu.addAction("日付を検出")
         self.btn_date_detect.setToolTip(
             "映像に焼き込まれた日付スタンプ（昔のビデオカメラの日付表示など）を\n"
-            "OCRで読み取り、各クリップの日付に設定します"
+            "OCRで読み取り、各クリップの日付候補として確認事項へ追加します"
         )
         self.btn_date_detect.setEnabled(False)
         self.btn_date_detect.triggered.connect(self._on_date_detect_clicked)
@@ -754,6 +834,7 @@ class ClipListWidget(QWidget):
             row.keep_changed.connect(self._on_individual_keep_changed)
             row.sensitive_changed.connect(self._on_individual_setting_changed)
             row.filename_changed.connect(self._on_individual_setting_changed)
+            row.date_changed.connect(self._on_individual_date_changed)
             row.selection_changed.connect(self._on_selection_changed)
             row.review_acknowledged.connect(self._on_review_acknowledged)
             row.set_merge_mode(self._merge_mode)
@@ -840,11 +921,7 @@ class ClipListWidget(QWidget):
         self.current_job.default_event_date = event_date
         if date_changed:
             for scene in self.current_job.scenes:
-                scene.reviewed_flags = [
-                    flag
-                    for flag in scene.reviewed_flags
-                    if flag not in ("date_missing", "date_inferred")
-                ]
+                clear_date_review_acknowledgements(scene)
         self.refresh_clips()
         self.job_changed.emit()
 
@@ -866,11 +943,7 @@ class ClipListWidget(QWidget):
             scene.event_name = name
             scene.event_date = event_date
             scene.date_source = "manual" if event_date is not None else None
-            scene.reviewed_flags = [
-                flag
-                for flag in scene.reviewed_flags
-                if flag not in ("date_missing", "date_inferred")
-            ]
+            clear_date_review_acknowledgements(scene)
 
         self.refresh_clips()
         self._update_action_state()
@@ -884,6 +957,10 @@ class ClipListWidget(QWidget):
 
     def _on_individual_setting_changed(self, *_args):
         self._update_action_state()
+        self.job_changed.emit()
+
+    def _on_individual_date_changed(self, *_args):
+        self.refresh_clips()
         self.job_changed.emit()
 
     def _selected_scene_indexes(self) -> list[int]:
@@ -998,7 +1075,7 @@ class ClipListWidget(QWidget):
             self.btn_date_detect.setText("日付を検出")
             self.btn_date_detect.setToolTip(
                 "映像に焼き込まれた日付スタンプ（昔のビデオカメラの日付表示など）を\n"
-                "OCRで読み取り、各クリップの日付に設定します"
+                "OCRで読み取り、各クリップの日付候補として確認事項へ追加します"
             )
         self._update_action_state()
 

@@ -37,6 +37,7 @@ from app.core.session_store import SessionStore
 from app.core.edit_history import JobEditSnapshot
 from app.core.metadata import apply_bulk_metadata
 from app.core.media_signal_detector import apply_media_signal_result
+from app.core.review import clear_date_review_acknowledgements
 
 
 def _boundaries_equal(left: List[float], right: List[float], tolerance: float = 1e-6) -> bool:
@@ -1247,11 +1248,7 @@ class MainWindow(QMainWindow):
         scenes = self.current_job.scenes
         before = JobEditSnapshot.capture(self.current_job)
         for scene in scenes:
-            scene.reviewed_flags = [
-                flag
-                for flag in scene.reviewed_flags
-                if flag not in ("date_missing", "date_inferred")
-            ]
+            clear_date_review_acknowledgements(scene)
 
         # 1) 完全な日付を設定
         applied = 0
@@ -1287,38 +1284,21 @@ class MainWindow(QMainWindow):
         total = len(scenes)
         set_count = sum(1 for s in scenes if s.event_date is not None)
         approx = ym_applied + len(inferred)
-        if JobEditSnapshot.capture(self.current_job) != before:
+        changed = JobEditSnapshot.capture(self.current_job) != before
+        if changed:
             self._append_edit_snapshot(before)
-
-        if set_count > 0:
             self.clip_list_widget.refresh_clips()
             self._on_job_edited()
+
+        if set_count > 0:
             msg = (
                 f"日付検出: {applied}/{total} シーンを検出"
                 + (f"、{approx} シーンを月/前後から推定" if approx else "")
+                + "。確認事項から映像と照合してください"
             )
             self.log_widget.append_log(msg)
-            if not self._date_detect_auto:
-                extra = (
-                    f"\n\nうち {approx} シーンは月情報や前後のクリップから推定しました\n"
-                    "（必要なら手動で修正できます）。"
-                    if approx else ""
-                )
-                QMessageBox.information(
-                    self,
-                    "日付検出完了",
-                    f"{set_count}/{total} シーンに日付を設定しました。{extra}\n\n"
-                    f"ファイル名のプレビューで確認できます。",
-                )
         else:
             self.log_widget.append_log("日付検出: 日付スタンプは見つかりませんでした")
-            if not self._date_detect_auto:
-                QMessageBox.information(
-                    self,
-                    "日付検出",
-                    "焼き込み日付は見つかりませんでした。\n"
-                    "日付表示が映像に映っているかご確認ください。",
-                )
 
     def _on_date_detect_error(self, message: str):
         self.log_widget.append_log(f"[ERROR] {message}")

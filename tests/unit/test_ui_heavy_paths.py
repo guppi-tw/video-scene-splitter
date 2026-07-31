@@ -273,7 +273,7 @@ def test_clip_editor_guides_user_through_only_pending_review_items(tmp_path):
 
     assert widget.review_summary_label.text() == "確認事項 1件"
     assert "3秒未満" in widget._clip_rows[0].review_label.text()
-    assert "日付は推定" in widget._clip_rows[0].review_label.text()
+    assert "推定日付: 1998/08/12" in widget._clip_rows[0].review_label.text()
     assert widget.btn_next_review.property("recommended") is True
     assert widget.btn_export.property("recommended") is False
 
@@ -309,6 +309,43 @@ def test_changing_default_date_reopens_a_new_missing_date_review(tmp_path):
 
     assert widget.review_summary_label.text() == "確認事項 1件"
     assert "日付未設定" in widget._clip_rows[0].review_label.text()
+    widget.close()
+
+
+def test_detected_date_can_be_checked_and_corrected_inline(tmp_path):
+    _app()
+    source = tmp_path / "detected-date-review.mp4"
+    source.touch()
+    job = VideoJob(
+        id=1,
+        source_path=source,
+        status=JobStatus.REVIEW,
+        scenes=[
+            Scene(
+                index=1,
+                start_time=0.0,
+                end_time=8.0,
+                event_date=date(1998, 8, 12),
+                date_source="detected",
+            )
+        ],
+    )
+    widget = ClipListWidget()
+    widget.set_job(job)
+    row = widget._clip_rows[0]
+
+    assert row.review_label.text() == "検出日付: 1998/08/12"
+    assert row.btn_edit_review_date.isHidden() is False
+
+    row.btn_edit_review_date.click()
+    assert row.date_editor_bar.isHidden() is False
+    assert row.btn_edit_review_date.isHidden() is True
+    row.review_date_edit.setDate(QDate(1998, 8, 13))
+    row.btn_apply_review_date.click()
+
+    assert job.scenes[0].event_date == date(1998, 8, 13)
+    assert job.scenes[0].date_source == "manual"
+    assert widget.review_summary_label.text() == "確認事項なし"
     widget.close()
 
 
@@ -758,6 +795,105 @@ def test_detected_dates_can_be_undone(tmp_path):
 
     window._shortcut_undo()
     assert job.scenes[0].event_date is None
+    window.close()
+
+
+def test_date_detection_results_open_inline_review_without_completion_modal(
+    monkeypatch, tmp_path
+):
+    _app()
+    source = tmp_path / "ocr-review.mp4"
+    source.touch()
+    job = VideoJob(
+        id=1,
+        source_path=source,
+        status=JobStatus.REVIEW,
+        scenes=[Scene(index=1, start_time=0.0, end_time=8.0)],
+    )
+    window = MainWindow()
+    window.current_job = job
+    window.clip_list_widget.set_job(job)
+    window.timeline_widget.set_scenes([0.0], 8.0)
+    window._date_detect_auto = False
+    modal_calls = []
+    monkeypatch.setattr(
+        QMessageBox,
+        "information",
+        lambda *_args, **_kwargs: modal_calls.append(True),
+    )
+
+    window._on_date_detect_complete({"full": {1: date(1998, 8, 12)}, "ym": {}})
+
+    assert modal_calls == []
+    assert window.clip_list_widget.review_summary_label.text() == "確認事項 1件"
+    assert "検出日付: 1998/08/12" in (
+        window.clip_list_widget._clip_rows[0].review_label.text()
+    )
+    assert "確認事項" in window.log_widget.log_text.toPlainText()
+    window.close()
+
+
+def test_inline_date_correction_participates_in_undo(tmp_path):
+    _app()
+    source = tmp_path / "date-correction-undo.mp4"
+    source.touch()
+    job = VideoJob(
+        id=1,
+        source_path=source,
+        status=JobStatus.REVIEW,
+        scenes=[
+            Scene(
+                index=1,
+                start_time=0.0,
+                end_time=8.0,
+                event_date=date(1998, 8, 12),
+                date_source="detected",
+            )
+        ],
+    )
+    window = MainWindow()
+    window.current_job = job
+    window.clip_list_widget.set_job(job)
+    window.timeline_widget.set_scenes([0.0], 8.0)
+    row = window.clip_list_widget._clip_rows[0]
+    row.btn_edit_review_date.click()
+    row.review_date_edit.setDate(QDate(1998, 8, 13))
+    row.btn_apply_review_date.click()
+
+    window._shortcut_undo()
+
+    assert job.scenes[0].event_date == date(1998, 8, 12)
+    assert job.scenes[0].date_source == "detected"
+    window.close()
+
+
+def test_rerunning_date_detection_reopens_an_unresolved_missing_date(tmp_path):
+    _app()
+    source = tmp_path / "still-undated.mp4"
+    source.touch()
+    job = VideoJob(
+        id=1,
+        source_path=source,
+        status=JobStatus.REVIEW,
+        scenes=[
+            Scene(
+                index=1,
+                start_time=0.0,
+                end_time=8.0,
+                reviewed_flags=["date_missing"],
+            )
+        ],
+    )
+    window = MainWindow()
+    window.current_job = job
+    window.clip_list_widget.set_job(job)
+    window.timeline_widget.set_scenes([0.0], 8.0)
+    assert window.clip_list_widget.review_summary_label.text() == "確認事項なし"
+
+    window._on_date_detect_complete({"full": {}, "ym": {}})
+
+    assert window.clip_list_widget.review_summary_label.text() == "確認事項 1件"
+    assert "日付未設定" in window.clip_list_widget._clip_rows[0].review_label.text()
     window.close()
 
 

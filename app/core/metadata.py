@@ -5,6 +5,7 @@ from datetime import date
 from typing import Optional
 
 from app.core.jobs import VideoJob
+from app.core.review import clear_date_review_acknowledgements
 
 
 @dataclass(frozen=True)
@@ -34,11 +35,7 @@ def apply_bulk_metadata(
 
         if default_date_changed:
             for scene in job.scenes:
-                scene.reviewed_flags = [
-                    flag
-                    for flag in scene.reviewed_flags
-                    if flag not in ("date_missing", "date_inferred")
-                ]
+                clear_date_review_acknowledgements(scene)
 
         if update.apply_to_scenes:
             for scene in job.scenes:
@@ -54,10 +51,7 @@ def apply_bulk_metadata(
                         scene.event_date = update.event_date
                         scene.date_source = source
                         changed = True
-                    scene.reviewed_flags = [
-                        flag for flag in scene.reviewed_flags
-                        if flag not in ("date_missing", "date_inferred")
-                    ]
+                    clear_date_review_acknowledgements(scene)
 
         if changed:
             changed_jobs += 1
