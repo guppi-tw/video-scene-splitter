@@ -192,7 +192,7 @@ def test_queue_actions_follow_selection_and_waiting_jobs(tmp_path):
     widget.refresh()
 
     assert widget.btn_detect_all.isEnabled() is True
-    assert widget.btn_detect_all.text() == "一括検出 (1)"
+    assert widget.btn_detect_all.text() == "一括シーン検出 (1)"
     assert widget.action_bulk_metadata.isEnabled() is True
 
     bulk_requests = []
@@ -220,6 +220,6 @@ def test_queue_actions_follow_selection_and_waiting_jobs(tmp_path):
     waiting_job.status = JobStatus.REVIEW
     widget.refresh()
     assert widget.btn_detect_all.isEnabled() is False
-    assert widget.btn_detect_all.text() == "一括検出"
+    assert widget.btn_detect_all.text() == "一括シーン検出"
 
     widget.close()

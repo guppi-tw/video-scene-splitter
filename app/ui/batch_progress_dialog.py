@@ -63,7 +63,7 @@ class BatchProgressDialog(QDialog):
         button_layout.addWidget(self.btn_cancel)
 
         self.btn_close = QPushButton("バックグラウンドで続ける")
-        self.btn_close.setToolTip("進捗画面を隠しても一括検出は続きます")
+        self.btn_close.setToolTip("進捗画面を隠しても一括シーン検出は続きます")
         self.btn_close.clicked.connect(self._on_close_clicked)
         button_layout.addWidget(self.btn_close)
 

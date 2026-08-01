@@ -605,11 +605,13 @@ def test_timeline_reset_is_disabled_while_detecting():
     widget.set_scenes([0.0, 4.0], 10.0)
 
     assert widget.btn_reset.isEnabled() is True
+    assert widget.btn_auto_detect.text() == "シーン検出"
     widget.set_detecting(True)
-    assert widget.btn_auto_detect.text() == "中止"
+    assert widget.btn_auto_detect.text() == "検出を中止"
     assert widget.btn_reset.isEnabled() is False
 
     widget.set_detecting(False)
+    assert widget.btn_auto_detect.text() == "シーン検出"
     assert widget.btn_reset.isEnabled() is True
     widget.close()
 
@@ -621,7 +623,7 @@ def test_timeline_keeps_advanced_controls_in_disclosure_menus():
     menu_labels = [action.text() for action in widget.btn_more.menu().actions()]
 
     assert widget.btn_more.text() == "…"
-    assert widget.settings_action.text() == "検出設定"
+    assert widget.settings_action.text() == "シーン検出設定"
     assert "操作方法" in menu_labels
     assert widget.btn_reset.text() == "境界をすべて削除"
     assert widget.threshold_spin.isVisible() is False

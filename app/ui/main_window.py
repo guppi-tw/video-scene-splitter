@@ -420,7 +420,7 @@ class MainWindow(QMainWindow):
         jobs = [j for j in self.job_queue.get_all_jobs() if j.status == JobStatus.WAITING]
         if not jobs:
             QMessageBox.information(
-                self, "一括検出",
+                self, "一括シーン検出",
                 "検出対象（待機中）の動画がありません。\n"
                 "既に開いた動画はそれぞれの画面で検出してください。"
             )
@@ -493,7 +493,7 @@ class MainWindow(QMainWindow):
 
     def _on_batch_detect_percent(self, percent: int):
         self.log_widget.set_progress_bar(percent, 100)
-        self.log_widget.set_detail(f"一括検出中: {percent}%")
+        self.log_widget.set_detail(f"一括シーン検出中: {percent}%")
         if self.batch_progress_dialog:
             self.batch_progress_dialog.set_progress(percent)
 
@@ -517,7 +517,7 @@ class MainWindow(QMainWindow):
 
     def _on_batch_detect_cancel(self):
         self._batch_cancel_requested = True
-        self.log_widget.append_log("一括検出をキャンセルしています...")
+        self.log_widget.append_log("一括シーン検出をキャンセルしています...")
         if self.batch_detection_worker:
             self.batch_detection_worker.cancel()
 
@@ -526,11 +526,11 @@ class MainWindow(QMainWindow):
             return
         self.log_widget.hide_progress()
         if self._batch_error:
-            finished_message = "一括検出完了（一部エラー）"
+            finished_message = "一括シーン検出完了（一部エラー）"
         elif self._batch_cancel_requested:
-            finished_message = "一括検出をキャンセルしました"
+            finished_message = "一括シーン検出をキャンセルしました"
         else:
-            finished_message = "一括検出完了"
+            finished_message = "一括シーン検出完了"
         self.log_widget.set_status(finished_message)
         if self.batch_detection_thread:
             self.batch_detection_thread.quit()
@@ -909,12 +909,12 @@ class MainWindow(QMainWindow):
             return
 
         if self.scene_detection_thread and self.scene_detection_thread.isRunning():
-            QMessageBox.warning(self, "警告", "シーン自動検出中です")
+            QMessageBox.warning(self, "警告", "シーン検出中です")
             return
 
         duration = self.current_job.scenes[-1].end_time
-        self.log_widget.append_log("シーン自動検出を準備中...")
-        self.log_widget.set_status("シーン自動検出中")
+        self.log_widget.append_log("シーン検出を準備中...")
+        self.log_widget.set_status("シーン検出中")
         self.timeline_widget.set_detecting(True)
 
         self.scene_detection_thread = QThread()
@@ -938,12 +938,12 @@ class MainWindow(QMainWindow):
         """シーン自動検出の中止リクエスト"""
         if self.scene_detection_worker:
             self.scene_detection_worker.cancel()
-            self.log_widget.append_log("シーン自動検出を中止しています...")
+            self.log_widget.append_log("シーン検出を中止しています...")
 
     def _on_detection_percent(self, percent: int):
         """シーン自動検出の進捗表示"""
         self.log_widget.set_progress_bar(percent, 100)
-        self.log_widget.set_detail(f"シーン自動検出中: {percent}%")
+        self.log_widget.set_detail(f"シーン検出中: {percent}%")
 
     def _on_scene_detection_complete(self, detected_boundaries: list):
         """シーン自動検出完了"""
@@ -964,10 +964,10 @@ class MainWindow(QMainWindow):
         if added_count > 0:
             self.timeline_widget.replace_boundaries(merged_boundaries)
             self.log_widget.append_log(
-                f"シーン自動検出: {added_count} 個の分割候補を追加しました"
+                f"シーン検出: {added_count} 個の分割候補を追加しました"
             )
         else:
-            self.log_widget.append_log("シーン自動検出: 新しい分割候補はありませんでした")
+            self.log_widget.append_log("シーン検出: 新しい分割候補はありませんでした")
 
         self.log_widget.set_status(f"編集中: {self.current_job.filename}")
         self._finish_scene_detection()
@@ -1164,8 +1164,8 @@ class MainWindow(QMainWindow):
     def _on_scene_detection_error(self, message: str):
         """シーン自動検出エラー"""
         self.log_widget.append_log(f"[ERROR] {message}")
-        self.log_widget.set_status("シーン自動検出エラー")
-        QMessageBox.warning(self, "シーン自動検出エラー", message)
+        self.log_widget.set_status("シーン検出エラー")
+        QMessageBox.warning(self, "シーン検出エラー", message)
         self._finish_scene_detection()
 
     def _on_scene_detection_finished(self):
@@ -1722,7 +1722,7 @@ class MainWindow(QMainWindow):
             self.batch_detection_thread.quit()
             self.batch_detection_thread.wait()
         if self.batch_progress_dialog:
-            self.batch_progress_dialog.set_finished("一括検出を終了しました")
+            self.batch_progress_dialog.set_finished("一括シーン検出を終了しました")
             self.batch_progress_dialog.close()
             self.batch_progress_dialog = None
 

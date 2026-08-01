@@ -433,9 +433,11 @@ class TimelineWidget(QWidget):
         settings_layout.addRow("感度", self.threshold_spin)
         settings_layout.addRow("最小シーン長", self.min_scene_spin)
 
-        # 自動検出ボタン（検出中は「中止」ボタンになる）
-        self.btn_auto_detect = QPushButton("自動検出")
-        self.btn_auto_detect.setToolTip("映像の変化から分割候補を自動追加します")
+        # シーン検出ボタン（検出中は中止操作へ切り替わる）
+        self.btn_auto_detect = QPushButton("シーン検出")
+        self.btn_auto_detect.setToolTip(
+            "映像の切り替わりを見つけ、タイムラインへ分割点を追加します"
+        )
         self.btn_auto_detect.clicked.connect(self._on_auto_detect_clicked)
         self.btn_auto_detect.setEnabled(False)
         header_layout.addWidget(self.btn_auto_detect)
@@ -447,11 +449,11 @@ class TimelineWidget(QWidget):
             "QPushButton::menu-indicator { image: none; width: 0px; }"
         )
         self.btn_more.setAccessibleName("タイムラインのその他の操作")
-        self.btn_more.setToolTip("検出設定、操作方法、境界のリセット")
+        self.btn_more.setToolTip("シーン検出設定、操作方法、境界のリセット")
         more_menu = QMenu(self.btn_more)
-        more_menu.addSection("検出設定")
+        more_menu.addSection("シーン検出設定")
         self.settings_action = QWidgetAction(more_menu)
-        self.settings_action.setText("検出設定")
+        self.settings_action.setText("シーン検出設定")
         self.settings_action.setToolTip("シーン検出の感度と最小シーン長")
         self.settings_action.setDefaultWidget(settings_panel)
         more_menu.addAction(self.settings_action)
@@ -653,12 +655,14 @@ class TimelineWidget(QWidget):
         """検出中の表示状態を切り替える（検出中はボタンが「中止」になる）"""
         self._detecting = detecting
         if detecting:
-            self.btn_auto_detect.setText("中止")
-            self.btn_auto_detect.setToolTip("シーン自動検出を中止します")
+            self.btn_auto_detect.setText("検出を中止")
+            self.btn_auto_detect.setToolTip("実行中のシーン検出を中止します")
             self.btn_auto_detect.setEnabled(True)
         else:
-            self.btn_auto_detect.setText("自動検出")
-            self.btn_auto_detect.setToolTip("映像の変化から分割候補を自動追加します")
+            self.btn_auto_detect.setText("シーン検出")
+            self.btn_auto_detect.setToolTip(
+                "映像の切り替わりを見つけ、タイムラインへ分割点を追加します"
+            )
             self.btn_auto_detect.setEnabled(self.duration > 0)
         self.btn_reset.setEnabled(self.duration > 0 and not detecting)
         # 検出中は設定変更を受け付けない

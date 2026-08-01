@@ -214,7 +214,7 @@ class SceneDetectionWorker(QObject):
     def run(self):
         """シーン境界を検出"""
         try:
-            self.progress.emit("シーン自動検出を開始しました")
+            self.progress.emit("シーン検出を開始しました")
             boundaries = detect_scene_boundaries(
                 self.job.source_path,
                 duration=self.duration,
@@ -223,11 +223,11 @@ class SceneDetectionWorker(QObject):
                 progress_callback=self.progress_percent.emit,
             )
             if boundaries is None or self._cancelled:
-                self.progress.emit("シーン自動検出はキャンセルされました")
+                self.progress.emit("シーン検出はキャンセルされました")
                 return
             self.detection_complete.emit(boundaries)
         except Exception as e:
-            self.error.emit(f"シーン自動検出エラー: {str(e)}")
+            self.error.emit(f"シーン検出エラー: {str(e)}")
         finally:
             self.finished.emit()
 

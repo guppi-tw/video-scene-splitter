@@ -111,7 +111,7 @@ class QueueWidget(QWidget):
         self.action_add_folder.triggered.connect(self._on_add_folder)
         self.btn_add.setMenu(add_menu)
 
-        self.btn_detect_all = QPushButton("一括検出")
+        self.btn_detect_all = QPushButton("一括シーン検出")
         self.btn_detect_all.setToolTip("待機中の全動画にシーン検出をまとめて実行します")
         self.btn_detect_all.clicked.connect(self.detect_all_requested.emit)
 
@@ -206,16 +206,18 @@ class QueueWidget(QWidget):
         if not self._detect_all_available:
             self.btn_detect_all.setEnabled(True)
             self.btn_detect_all.setText("進捗を表示")
-            self.btn_detect_all.setToolTip("実行中の一括検出の進捗画面を表示します")
+            self.btn_detect_all.setToolTip(
+                "実行中の一括シーン検出の進捗画面を表示します"
+            )
         elif waiting_count:
             self.btn_detect_all.setEnabled(True)
-            self.btn_detect_all.setText(f"一括検出 ({waiting_count})")
+            self.btn_detect_all.setText(f"一括シーン検出 ({waiting_count})")
             self.btn_detect_all.setToolTip(
                 f"待機中の動画 {waiting_count} 本をまとめてシーン検出します"
             )
         else:
             self.btn_detect_all.setEnabled(False)
-            self.btn_detect_all.setText("一括検出")
+            self.btn_detect_all.setText("一括シーン検出")
             self.btn_detect_all.setToolTip("待機中の動画がありません")
 
     def dragEnterEvent(self, event):
