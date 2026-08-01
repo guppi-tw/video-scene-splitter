@@ -245,7 +245,7 @@ class ClipRow(QFrame):
 
         layout.addLayout(info_layout, stretch=1)
 
-        # Keep / 要注意 を縦に並べてコンパクトに
+        # 書き出し / 共有注意 を縦に並べてコンパクトに
         self.settings_widget = QWidget()
         check_layout = QVBoxLayout(self.settings_widget)
         check_layout.setContentsMargins(0, 0, 0, 0)
@@ -257,14 +257,14 @@ class ClipRow(QFrame):
         self.keep_check.stateChanged.connect(self._on_keep_changed)
         check_layout.addWidget(self.keep_check)
 
-        # 要注意チェックボックス
-        self.sensitive_check = QCheckBox("要確認")
+        # クラウド共有時に注意が必要なクリップのチェックボックス
+        self.sensitive_check = QCheckBox("共有注意")
         self.sensitive_check.setMinimumWidth(72)
         self.sensitive_check.setToolTip(
-            "要確認のクリップとして専用フォルダへ分けて書き出します"
+            "クラウド共有前に確認できるよう、専用フォルダへ分けて書き出します"
         )
         self.sensitive_check.setAccessibleName(
-            "要確認として専用フォルダへ分けて書き出す"
+            "共有注意として専用フォルダへ分けて書き出す"
         )
         self.sensitive_check.setChecked(self.scene.is_sensitive)
         self.sensitive_check.setEnabled(self.scene.keep)
@@ -491,8 +491,10 @@ class ClipListWidget(QWidget):
         self.output_name_label.setBuddy(self.event_name_edit)
         name_layout.addWidget(self.event_name_edit, stretch=1)
 
-        self.btn_apply_all = QPushButton("全クリップへ反映")
-        self.btn_apply_all.setToolTip("ファイル名と日付を全クリップに適用")
+        self.btn_apply_all = QPushButton("全クリップに上書き")
+        self.btn_apply_all.setToolTip(
+            "出力名と日付で、全クリップの個別設定を上書きします"
+        )
         self.btn_apply_all.clicked.connect(self._on_apply_all)
         name_layout.addWidget(self.btn_apply_all)
         meta_layout.addLayout(name_layout)
@@ -539,8 +541,10 @@ class ClipListWidget(QWidget):
         self.btn_blank_detect.setEnabled(False)
         self.btn_blank_detect.triggered.connect(self._on_blank_detect_clicked)
 
-        self.btn_short_merge = post_menu.addAction("短いシーンを結合")
-        self.btn_short_merge.setToolTip("短いシーンをまとめる結合提案をもう一度出します")
+        self.btn_short_merge = post_menu.addAction("短いシーンの結合を提案")
+        self.btn_short_merge.setToolTip(
+            "短いシーンを自動で見つけ、まとめる候補を提案します"
+        )
         self.btn_short_merge.setEnabled(False)
         self.btn_short_merge.triggered.connect(
             lambda _checked=False: self.short_merge_requested.emit()
@@ -567,7 +571,7 @@ class ClipListWidget(QWidget):
         post_layout = QHBoxLayout()
         post_layout.setSpacing(6)
         post_layout.addWidget(self.btn_postprocess)
-        self.btn_merge_mode = QPushButton("クリップを結合")
+        self.btn_merge_mode = QPushButton("選択して結合")
         self.btn_merge_mode.setCheckable(True)
         self.btn_merge_mode.clicked.connect(self._toggle_merge_mode)
         post_layout.addWidget(self.btn_merge_mode)
@@ -601,9 +605,12 @@ class ClipListWidget(QWidget):
         )
         self._sync_export_preset_tooltip()
 
-        self.keep_all_check = QCheckBox("すべて書き出す")
+        self.keep_all_check = QCheckBox("全クリップを選択")
         self.keep_all_check.setChecked(True)
         self.keep_all_check.setToolTip("全クリップの書き出し対象を一括切り替え")
+        self.keep_all_check.setAccessibleName(
+            "全クリップを書き出し対象として一括選択"
+        )
         self.keep_all_check.stateChanged.connect(self._on_keep_all_toggled)
 
         self.btn_export = QPushButton("書き出し")
@@ -611,9 +618,10 @@ class ClipListWidget(QWidget):
 
         export_layout = QHBoxLayout()
         export_layout.setSpacing(6)
-        export_layout.addWidget(QLabel("出力"))
+        self.export_method_label = QLabel("書き出し方法")
+        self.export_method_label.setBuddy(self.export_preset_combo)
+        export_layout.addWidget(self.export_method_label)
         export_layout.addWidget(self.export_preset_combo)
-        export_layout.addWidget(self.keep_all_check)
         export_layout.addStretch()
         export_layout.addWidget(self.btn_export)
         action_layout.addLayout(export_layout)
@@ -626,21 +634,30 @@ class ClipListWidget(QWidget):
             "QFrame#reviewBar { background-color: #30291d; "
             "border: 1px solid #66522e; border-radius: 4px; }"
         )
-        review_layout = QHBoxLayout(self.review_bar)
+        review_layout = QVBoxLayout(self.review_bar)
         review_layout.setContentsMargins(8, 5, 8, 5)
-        review_layout.setSpacing(6)
+        review_layout.setSpacing(3)
+        review_primary_layout = QHBoxLayout()
+        review_primary_layout.setSpacing(6)
         self.review_summary_label = QLabel("確認事項なし")
         self.review_summary_label.setStyleSheet("font-weight: bold; color: #ffd27a;")
-        review_layout.addWidget(self.review_summary_label)
-        review_layout.addStretch()
-        self.review_only_check = QCheckBox("未確認のみ")
-        self.review_only_check.setToolTip("確認が必要なクリップだけを表示します")
-        self.review_only_check.toggled.connect(lambda _checked: self.refresh_clips())
-        review_layout.addWidget(self.review_only_check)
+        review_primary_layout.addWidget(self.review_summary_label)
+        review_primary_layout.addStretch()
         self.btn_next_review = QPushButton("次を確認")
         self.btn_next_review.setToolTip("次の未確認クリップへ移動します")
         self.btn_next_review.clicked.connect(self._on_next_review)
-        review_layout.addWidget(self.btn_next_review)
+        review_primary_layout.addWidget(self.btn_next_review)
+        review_layout.addLayout(review_primary_layout)
+
+        review_filter_layout = QHBoxLayout()
+        review_filter_layout.setSpacing(6)
+        review_filter_layout.addWidget(self.keep_all_check)
+        review_filter_layout.addStretch()
+        self.review_only_check = QCheckBox("未確認のみ")
+        self.review_only_check.setToolTip("確認が必要なクリップだけを表示します")
+        self.review_only_check.toggled.connect(lambda _checked: self.refresh_clips())
+        review_filter_layout.addWidget(self.review_only_check)
+        review_layout.addLayout(review_filter_layout)
         layout.addWidget(self.review_bar)
 
         # スクロール可能なクリップリスト
@@ -754,7 +771,7 @@ class ClipListWidget(QWidget):
         self.current_job = job
         self._merge_mode = False
         self.btn_merge_mode.setChecked(False)
-        self.btn_merge_mode.setText("クリップを結合")
+        self.btn_merge_mode.setText("選択して結合")
         self.merge_bar.hide()
         self._set_editor_visible(True)
 
@@ -892,7 +909,7 @@ class ClipListWidget(QWidget):
 
     def _toggle_merge_mode(self, enabled: bool):
         self._merge_mode = enabled
-        self.btn_merge_mode.setText("結合を終了" if enabled else "クリップを結合")
+        self.btn_merge_mode.setText("結合を終了" if enabled else "選択して結合")
         self.merge_bar.setVisible(enabled)
         for row in self._clip_rows:
             row.set_merge_mode(enabled)
@@ -1175,10 +1192,10 @@ class ClipListWidget(QWidget):
             self,
             "書き出し確認",
             f"書き出し対象: {len(kept)}個\n"
-            f"要確認として分ける: {sensitive_count}個\n"
+            f"共有注意として分ける: {sensitive_count}個\n"
             f"書き出し方法: {preset.label}\n"
             f"出力先: {output_dir}\n\n"
-            f"要確認クリップは専用フォルダへ分けて出力されます。\n"
+            f"共有注意クリップは専用フォルダへ分けて出力されます。\n"
             f"書き出しを開始しますか？",
             QMessageBox.Yes | QMessageBox.No
         )

@@ -119,14 +119,26 @@ class QueueWidget(QWidget):
         self.btn_open.setToolTip("選択した動画を確認・編集します")
         self.btn_open.clicked.connect(self._open_selected)
 
-        self.btn_remove = QPushButton("削除")
-        self.btn_remove.clicked.connect(self._on_remove)
-
-        self.btn_bulk_metadata = QPushButton("複数動画をまとめて設定")
-        self.btn_bulk_metadata.setToolTip(
+        # 低頻度・破壊的な操作は常設せず、オーバーフローメニューへまとめる。
+        self.btn_more = QPushButton("…")
+        self.btn_more.setFixedWidth(38)
+        self.btn_more.setStyleSheet(
+            "QPushButton::menu-indicator { image: none; width: 0px; }"
+        )
+        self.btn_more.setAccessibleName("キューのその他の操作")
+        self.btn_more.setToolTip("一括設定やキューからの削除")
+        queue_menu = QMenu(self.btn_more)
+        self.action_bulk_metadata = queue_menu.addAction("一括設定…")
+        self.action_bulk_metadata.setToolTip(
             "選択した複数動画へ出力名と日付をまとめて設定します"
         )
-        self.btn_bulk_metadata.clicked.connect(self.bulk_metadata_requested.emit)
+        self.action_bulk_metadata.triggered.connect(
+            self.bulk_metadata_requested.emit
+        )
+        queue_menu.addSeparator()
+        self.action_remove = queue_menu.addAction("キューから削除")
+        self.action_remove.triggered.connect(self._on_remove)
+        self.btn_more.setMenu(queue_menu)
 
         primary_layout = QHBoxLayout()
         primary_layout.setSpacing(5)
@@ -137,9 +149,8 @@ class QueueWidget(QWidget):
         secondary_layout = QHBoxLayout()
         secondary_layout.setSpacing(5)
         secondary_layout.addWidget(self.btn_detect_all, stretch=1)
-        secondary_layout.addWidget(self.btn_remove)
+        secondary_layout.addWidget(self.btn_more)
         btn_layout.addLayout(secondary_layout)
-        btn_layout.addWidget(self.btn_bulk_metadata)
 
         layout.addWidget(action_bar)
 
@@ -183,9 +194,9 @@ class QueueWidget(QWidget):
         waiting_count = self._waiting_job_count()
         selected_job = self.get_selected_job()
         has_selection = selected_job is not None
-        self.btn_remove.setEnabled(has_selection)
+        self.action_remove.setEnabled(has_selection)
         self.btn_open.setEnabled(has_selection)
-        self.btn_bulk_metadata.setEnabled(bool(self.job_queue.get_all_jobs()))
+        self.action_bulk_metadata.setEnabled(bool(self.job_queue.get_all_jobs()))
         if selected_job and selected_job.status == JobStatus.DONE:
             self.btn_open.setText("確認")
         elif selected_job and selected_job.status == JobStatus.WAITING:

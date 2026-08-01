@@ -179,9 +179,12 @@ def test_queue_actions_follow_selection_and_waiting_jobs(tmp_path):
     widget = QueueWidget(queue)
     widget.refresh()
 
-    assert widget.btn_remove.isEnabled() is False
+    assert widget.action_remove.isEnabled() is False
     assert widget.btn_detect_all.isEnabled() is False
-    assert widget.btn_bulk_metadata.isEnabled() is False
+    assert widget.action_bulk_metadata.isEnabled() is False
+    assert widget.btn_more.text() == "…"
+    assert widget.action_bulk_metadata.text() == "一括設定…"
+    assert widget.action_remove.text() == "キューから削除"
 
     waiting_path = tmp_path / "waiting.mp4"
     waiting_path.touch()
@@ -190,15 +193,19 @@ def test_queue_actions_follow_selection_and_waiting_jobs(tmp_path):
 
     assert widget.btn_detect_all.isEnabled() is True
     assert widget.btn_detect_all.text() == "一括検出 (1)"
-    assert widget.btn_bulk_metadata.isEnabled() is True
+    assert widget.action_bulk_metadata.isEnabled() is True
 
     bulk_requests = []
     widget.bulk_metadata_requested.connect(lambda: bulk_requests.append(True))
-    widget.btn_bulk_metadata.click()
+    widget.action_bulk_metadata.trigger()
     assert bulk_requests == [True]
 
     widget.select_job(waiting_job.id)
-    assert widget.btn_remove.isEnabled() is True
+    assert widget.action_remove.isEnabled() is True
+    remove_requests = []
+    widget.remove_requested.connect(remove_requests.append)
+    widget.action_remove.trigger()
+    assert remove_requests == [waiting_job.id]
 
     progress_requests = []
     widget.detect_all_requested.connect(lambda: progress_requests.append(True))

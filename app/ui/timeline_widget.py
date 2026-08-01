@@ -385,13 +385,23 @@ class TimelineWidget(QWidget):
         self.label_title.setStyleSheet("font-weight: bold;")
         header_layout.addWidget(self.label_title)
 
-        self.candidate_summary_label = QLabel()
-        self.candidate_summary_label.setStyleSheet(
-            "color: #72c8ea; font-weight: bold;"
+        self.candidate_summary_button = QPushButton()
+        self.candidate_summary_button.setFlat(True)
+        self.candidate_summary_button.setStyleSheet(
+            "QPushButton { color: #72c8ea; font-weight: bold; "
+            "border: 0; padding: 2px 4px; }"
+            "QPushButton:hover { text-decoration: underline; }"
+            "QPushButton:disabled { color: #777; }"
         )
-        self.candidate_summary_label.setAccessibleName("未適用の境界候補数")
-        self.candidate_summary_label.hide()
-        header_layout.addWidget(self.candidate_summary_label)
+        self.candidate_summary_button.setAccessibleName(
+            "未適用の境界候補を追加"
+        )
+        self.candidate_summary_button.setToolTip(
+            "音声・フェード解析の候補をタイムラインへ追加します"
+        )
+        self.candidate_summary_button.clicked.connect(self._on_apply_candidates)
+        self.candidate_summary_button.hide()
+        header_layout.addWidget(self.candidate_summary_button)
         
         header_layout.addStretch()
 
@@ -430,19 +440,21 @@ class TimelineWidget(QWidget):
         self.btn_auto_detect.setEnabled(False)
         header_layout.addWidget(self.btn_auto_detect)
 
-        # 幅が狭い画面でもラベルが潰れないよう、低頻度操作は2段目へ分ける。
-        secondary_header_layout = QHBoxLayout()
-        secondary_header_layout.addStretch()
-
-        self.btn_settings = QPushButton("設定")
-        self.btn_settings.setToolTip("シーン検出の感度と最小シーン長")
-        settings_menu = QMenu(self.btn_settings)
-        settings_action = QWidgetAction(settings_menu)
-        settings_action.setDefaultWidget(settings_panel)
-        settings_menu.addAction(settings_action)
-        self.btn_settings.setMenu(settings_menu)
-        self.btn_settings.setEnabled(False)
-        secondary_header_layout.addWidget(self.btn_settings)
+        # 低頻度操作は1つのオーバーフローメニューへまとめる。
+        self.btn_more = QPushButton("…")
+        self.btn_more.setFixedWidth(38)
+        self.btn_more.setStyleSheet(
+            "QPushButton::menu-indicator { image: none; width: 0px; }"
+        )
+        self.btn_more.setAccessibleName("タイムラインのその他の操作")
+        self.btn_more.setToolTip("検出設定、操作方法、境界のリセット")
+        more_menu = QMenu(self.btn_more)
+        more_menu.addSection("検出設定")
+        self.settings_action = QWidgetAction(more_menu)
+        self.settings_action.setText("検出設定")
+        self.settings_action.setToolTip("シーン検出の感度と最小シーン長")
+        self.settings_action.setDefaultWidget(settings_panel)
+        more_menu.addAction(self.settings_action)
 
         self.btn_review_boundary = QPushButton("境界確認")
         self.btn_review_boundary.setToolTip(
@@ -452,8 +464,7 @@ class TimelineWidget(QWidget):
         self.btn_review_boundary.setEnabled(False)
         header_layout.addWidget(self.btn_review_boundary)
 
-        self.btn_help = QPushButton("操作方法")
-        help_menu = QMenu(self.btn_help)
+        help_menu = more_menu.addMenu("操作方法")
         for text in (
             "Space　再生／一時停止",
             "S　現在位置で分割",
@@ -464,24 +475,15 @@ class TimelineWidget(QWidget):
         ):
             action = help_menu.addAction(text)
             action.setEnabled(False)
-        self.btn_help.setMenu(help_menu)
-        secondary_header_layout.addWidget(self.btn_help)
-
-        boundary_menu_button = QPushButton("その他")
-        boundary_menu = QMenu(boundary_menu_button)
-        self.action_apply_candidates = boundary_menu.addAction("境界候補はありません")
-        self.action_apply_candidates.setEnabled(False)
-        self.action_apply_candidates.triggered.connect(self._on_apply_candidates)
-        boundary_menu.addSeparator()
-        self.btn_reset = boundary_menu.addAction("境界をすべて削除")
+        more_menu.addSeparator()
+        self.btn_reset = more_menu.addAction("境界をすべて削除")
         self.btn_reset.setToolTip("動画全体を1つのクリップへ戻します")
         self.btn_reset.triggered.connect(self._on_reset)
         self.btn_reset.setEnabled(False)
-        boundary_menu_button.setMenu(boundary_menu)
-        secondary_header_layout.addWidget(boundary_menu_button)
+        self.btn_more.setMenu(more_menu)
+        header_layout.addWidget(self.btn_more)
         
         layout.addLayout(header_layout)
-        layout.addLayout(secondary_header_layout)
         
         # タイムラインバー
         self.timeline_bar = TimelineBar()
@@ -577,7 +579,7 @@ class TimelineWidget(QWidget):
 
         self.btn_reset.setEnabled(True)
         self.btn_auto_detect.setEnabled(True)
-        self.btn_settings.setEnabled(True)
+        self.settings_action.setEnabled(True)
         self.btn_review_boundary.setEnabled(len(self.scene_start_times) > 1)
         self._sync_recommended_action()
 
@@ -591,7 +593,7 @@ class TimelineWidget(QWidget):
         self.timeline_bar.set_playhead(0.0)
         self.btn_reset.setEnabled(False)
         self.btn_auto_detect.setEnabled(False)
-        self.btn_settings.setEnabled(False)
+        self.settings_action.setEnabled(False)
         self.btn_review_boundary.setEnabled(False)
         self.boundary_review_panel.hide()
         self._reviewed_boundary_time = None
@@ -633,22 +635,14 @@ class TimelineWidget(QWidget):
         self.boundary_candidates = normalized
         self.timeline_bar.set_candidates(normalized)
         if normalized:
-            self.candidate_summary_label.setText(
-                f"未適用候補 {len(normalized)}件"
+            self.candidate_summary_button.setText(
+                f"候補 {len(normalized)}件を追加"
             )
-            self.candidate_summary_label.show()
-            self.action_apply_candidates.setText(
-                f"候補を境界に追加 ({len(normalized)})"
-            )
-            self.action_apply_candidates.setEnabled(not self._detecting)
-            self.action_apply_candidates.setToolTip(
-                "音声・フェード解析の候補をタイムラインへ追加します"
-            )
+            self.candidate_summary_button.setEnabled(not self._detecting)
+            self.candidate_summary_button.show()
         else:
-            self.candidate_summary_label.hide()
-            self.action_apply_candidates.setText("境界候補はありません")
-            self.action_apply_candidates.setEnabled(False)
-            self.action_apply_candidates.setToolTip("")
+            self.candidate_summary_button.hide()
+            self.candidate_summary_button.setEnabled(False)
 
     def set_auto_detect_enabled(self, enabled: bool):
         """自動検出ボタンの有効状態を設定"""
@@ -670,11 +664,11 @@ class TimelineWidget(QWidget):
         # 検出中は設定変更を受け付けない
         self.threshold_spin.setEnabled(not detecting)
         self.min_scene_spin.setEnabled(not detecting)
-        self.btn_settings.setEnabled(self.duration > 0 and not detecting)
+        self.settings_action.setEnabled(self.duration > 0 and not detecting)
         self.btn_review_boundary.setEnabled(
             len(self.scene_start_times) > 1 and not detecting
         )
-        self.action_apply_candidates.setEnabled(
+        self.candidate_summary_button.setEnabled(
             bool(self.boundary_candidates) and not detecting
         )
         self._sync_recommended_action()

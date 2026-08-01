@@ -226,9 +226,16 @@ def test_clip_editor_hides_low_frequency_controls_until_needed(tmp_path):
     assert row.filename_label.isHidden() is False
     assert row.filename_label.focusPolicy() == Qt.StrongFocus
     assert row.keep_check.text() == "書き出す"
-    assert row.sensitive_check.text() == "要確認"
+    assert row.sensitive_check.text() == "共有注意"
     assert "専用フォルダ" in row.sensitive_check.toolTip()
     assert widget.btn_postprocess.text() == "補正ツール"
+    assert widget.btn_short_merge.text() == "短いシーンの結合を提案"
+    assert widget.btn_merge_mode.text() == "選択して結合"
+    assert widget.btn_apply_all.text() == "全クリップに上書き"
+    assert widget.export_method_label.text() == "書き出し方法"
+    assert widget.keep_all_check.text() == "全クリップを選択"
+    assert widget.review_bar.isAncestorOf(widget.keep_all_check) is True
+    assert widget.action_bar.isAncestorOf(widget.keep_all_check) is False
 
     widget.show()
     QApplication.processEvents()
@@ -452,7 +459,7 @@ def test_media_signal_results_stay_as_non_destructive_review_candidates(tmp_path
     assert "フェード候補" in window.clip_list_widget._clip_rows[1].review_label.text()
 
     window._regenerate_thumbnails = lambda: None
-    window.timeline_widget.action_apply_candidates.trigger()
+    window.timeline_widget.candidate_summary_button.click()
 
     assert window.timeline_widget.get_boundaries() == [
         0.0,
@@ -579,17 +586,16 @@ def test_timeline_keeps_signal_candidates_separate_until_user_applies_them():
 
     widget.set_boundary_candidates([4.0, 6.0])
 
-    assert widget.candidate_summary_label.text() == "未適用候補 2件"
-    assert widget.candidate_summary_label.isHidden() is False
-    assert widget.action_apply_candidates.text() == "候補を境界に追加 (2)"
-    assert widget.action_apply_candidates.isEnabled() is True
+    assert widget.candidate_summary_button.text() == "候補 2件を追加"
+    assert widget.candidate_summary_button.isHidden() is False
+    assert widget.candidate_summary_button.isEnabled() is True
     assert widget.get_boundaries() == [0.0, 10.0]
 
-    widget.action_apply_candidates.trigger()
+    widget.candidate_summary_button.click()
 
     assert changed[-1] == [0.0, 4.0, 6.0, 10.0]
-    assert widget.candidate_summary_label.isHidden() is True
-    assert widget.action_apply_candidates.isEnabled() is False
+    assert widget.candidate_summary_button.isHidden() is True
+    assert widget.candidate_summary_button.isEnabled() is False
     widget.close()
 
 
@@ -612,8 +618,11 @@ def test_timeline_keeps_advanced_controls_in_disclosure_menus():
     _app()
     widget = TimelineWidget()
 
-    assert widget.btn_settings.text() == "設定"
-    assert widget.btn_help.text() == "操作方法"
+    menu_labels = [action.text() for action in widget.btn_more.menu().actions()]
+
+    assert widget.btn_more.text() == "…"
+    assert widget.settings_action.text() == "検出設定"
+    assert "操作方法" in menu_labels
     assert widget.btn_reset.text() == "境界をすべて削除"
     assert widget.threshold_spin.isVisible() is False
     assert widget.min_scene_spin.isVisible() is False
