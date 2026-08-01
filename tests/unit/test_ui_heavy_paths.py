@@ -420,7 +420,15 @@ def test_scene_detection_finishes_without_opening_correction_modals(tmp_path):
 
     window._on_scene_detection_complete([0.0, 4.0])
 
-    assert calls == ["defer", "detect-finished", ("date", True)]
+    assert calls == ["detect-finished"]
+    assert len(job.scenes) == 1
+    assert window.timeline_widget.detection_preview_times == [4.0]
+    assert window.timeline_widget.detection_panel.isHidden() is False
+
+    window.timeline_widget.btn_detection_apply.click()
+
+    assert len(job.scenes) == 2
+    assert calls == ["detect-finished", ("date", True)]
     assert "補正ツール" in window.log_widget.log_text.toPlainText()
     window.close()
 
@@ -586,7 +594,7 @@ def test_timeline_keeps_signal_candidates_separate_until_user_applies_them():
 
     widget.set_boundary_candidates([4.0, 6.0])
 
-    assert widget.candidate_summary_button.text() == "候補 2件を追加"
+    assert widget.candidate_summary_button.text() == "解析候補 2件を追加"
     assert widget.candidate_summary_button.isHidden() is False
     assert widget.candidate_summary_button.isEnabled() is True
     assert widget.get_boundaries() == [0.0, 10.0]
@@ -623,11 +631,60 @@ def test_timeline_keeps_advanced_controls_in_disclosure_menus():
     menu_labels = [action.text() for action in widget.btn_more.menu().actions()]
 
     assert widget.btn_more.text() == "…"
-    assert widget.settings_action.text() == "シーン検出設定"
+    assert widget.settings_action.text() == "シーン検出設定を開く"
     assert "操作方法" in menu_labels
     assert widget.btn_reset.text() == "境界をすべて削除"
     assert widget.threshold_spin.isVisible() is False
     assert widget.min_scene_spin.isVisible() is False
+    widget.close()
+
+
+def test_scene_detection_preview_supports_tuning_navigation_and_apply():
+    _app()
+    widget = TimelineWidget()
+    widget.set_scenes([0.0], 12.0)
+    detect_requests = []
+    seeks = []
+    comparisons = []
+    changed = []
+    applied = []
+    widget.auto_detect_requested.connect(lambda: detect_requests.append(True))
+    widget.seek_requested.connect(seeks.append)
+    widget.boundary_review_requested.connect(comparisons.append)
+    widget.boundaries_changed.connect(changed.append)
+    widget.scene_detection_preview_applied.connect(applied.append)
+
+    widget.btn_auto_detect.click()
+    assert widget.detection_panel.isHidden() is False
+    assert widget.btn_auto_detect.isHidden() is True
+    assert detect_requests == [True]
+
+    widget.set_detection_preview([0.0, 4.0, 8.0, 12.0])
+    assert widget.detection_preview_times == [4.0, 8.0]
+    assert widget.timeline_bar.detection_preview_times == [4.0, 8.0]
+    assert "反映後 3クリップ" in widget.detection_status_label.text()
+    assert widget.btn_detection_apply.isEnabled() is True
+
+    widget.btn_detection_next.click()
+    assert seeks == [8.0]
+    widget.btn_detection_compare.click()
+    assert comparisons == [8.0]
+
+    widget.threshold_spin.setValue(2.5)
+    assert "設定が変わりました" in widget.detection_status_label.text()
+    assert widget.btn_detection_apply.isEnabled() is False
+
+    widget.btn_detection_run.click()
+    assert detect_requests == [True, True]
+    widget.set_detection_preview([0.0, 3.0, 6.0, 9.0])
+    assert widget.btn_detection_apply.isEnabled() is True
+
+    widget.btn_detection_apply.click()
+    assert changed[-1] == [0.0, 3.0, 6.0, 9.0]
+    assert applied == [[3.0, 6.0, 9.0]]
+    assert widget.detection_preview_times == []
+    assert widget.detection_panel.isHidden() is True
+    assert widget.btn_auto_detect.isHidden() is False
     widget.close()
 
 

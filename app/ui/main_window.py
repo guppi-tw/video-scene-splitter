@@ -32,7 +32,7 @@ from app.ui.workers import (
     DateDetectionWorker, BlankDetectionWorker, BatchSceneDetectionWorker,
     BoundaryPreviewWorker, MediaSignalWorker,
 )
-from app.core.scene_detector import absorb_short_scenes, merge_boundaries
+from app.core.scene_detector import absorb_short_scenes
 from app.core.session_store import SessionStore
 from app.core.edit_history import JobEditSnapshot
 from app.core.metadata import apply_bulk_metadata
@@ -84,6 +84,7 @@ class MainWindow(QMainWindow):
         self.export_worker: ExportWorker = None
         self.scene_detection_thread: QThread = None
         self.scene_detection_worker: SceneDetectionWorker = None
+        self._scene_detection_result_received = False
         self.date_detection_thread: QThread = None
         self.date_detection_worker: DateDetectionWorker = None
         self._date_detect_auto = False
@@ -202,6 +203,9 @@ class MainWindow(QMainWindow):
         )
         self.timeline_widget.boundary_candidates_applied.connect(
             self._on_boundary_candidates_applied
+        )
+        self.timeline_widget.scene_detection_preview_applied.connect(
+            self._on_scene_detection_preview_applied
         )
 
         # クリップリスト → プレビュー
@@ -913,6 +917,7 @@ class MainWindow(QMainWindow):
             return
 
         duration = self.current_job.scenes[-1].end_time
+        self._scene_detection_result_received = False
         self.log_widget.append_log("シーン検出を準備中...")
         self.log_widget.set_status("シーン検出中")
         self.timeline_widget.set_detecting(True)
@@ -946,25 +951,18 @@ class MainWindow(QMainWindow):
         self.log_widget.set_detail(f"シーン検出中: {percent}%")
 
     def _on_scene_detection_complete(self, detected_boundaries: list):
-        """シーン自動検出完了"""
+        """検出結果を確定せず、タイムライン上の候補として表示する。"""
+        self._scene_detection_result_received = True
         if not self.current_job or not self.current_job.scenes:
             self._finish_scene_detection()
             return
 
-        self._begin_deferred_thumbnails()
-        duration = self.current_job.scenes[-1].end_time
-        existing_boundaries = self.timeline_widget.get_boundaries()
-        merged_boundaries = merge_boundaries(
-            existing_boundaries,
-            detected_boundaries,
-            duration,
-        )
-        added_count = len(merged_boundaries) - len(existing_boundaries)
+        self.timeline_widget.set_detection_preview(detected_boundaries)
+        added_count = len(self.timeline_widget.detection_preview_times)
 
         if added_count > 0:
-            self.timeline_widget.replace_boundaries(merged_boundaries)
             self.log_widget.append_log(
-                f"シーン検出: {added_count} 個の分割候補を追加しました"
+                f"シーン検出: {added_count}個の分割候補をプレビュー中"
             )
         else:
             self.log_widget.append_log("シーン検出: 新しい分割候補はありませんでした")
@@ -972,13 +970,17 @@ class MainWindow(QMainWindow):
         self.log_widget.set_status(f"編集中: {self.current_job.filename}")
         self._finish_scene_detection()
 
-        # 補正候補で作業を遮らない。つなぎ目除外・短いシーンの結合は
-        # 必要なときだけ「補正ツール」から起動し、日付検出だけ裏で続ける。
+    def _on_scene_detection_preview_applied(self, candidates: list):
+        """確認済みのシーン検出候補を反映した後の処理。"""
+        if not self.current_job:
+            return
+        self.log_widget.append_log(
+            f"シーン検出: 確認した分割候補 {len(candidates)}個を反映しました"
+        )
         self.log_widget.append_log(
             "必要に応じて「補正ツール」からつなぎ目除外や結合を確認できます"
         )
-        if not self._start_date_detection(auto=True):
-            self._finish_deferred_thumbnails()
+        self._start_date_detection(auto=True)
 
     def _on_blank_detect_requested(self):
         """クリップ一覧から手動でつなぎ目検出を開始"""
@@ -1163,8 +1165,12 @@ class MainWindow(QMainWindow):
 
     def _on_scene_detection_error(self, message: str):
         """シーン自動検出エラー"""
+        self._scene_detection_result_received = True
         self.log_widget.append_log(f"[ERROR] {message}")
         self.log_widget.set_status("シーン検出エラー")
+        self.timeline_widget.set_detection_status(
+            f"シーン検出に失敗しました: {message}"
+        )
         QMessageBox.warning(self, "シーン検出エラー", message)
         self._finish_scene_detection()
 
@@ -1173,6 +1179,10 @@ class MainWindow(QMainWindow):
         # complete/errorハンドラが先に後始末を済ませた場合は何もしない
         if self.sender() is not self.scene_detection_worker:
             return
+        if not self._scene_detection_result_received:
+            self.timeline_widget.set_detection_status(
+                "シーン検出を中止しました。設定を変えて再実行できます"
+            )
         if self.current_job:
             self.log_widget.set_status(f"編集中: {self.current_job.filename}")
         self._finish_scene_detection()

@@ -6,8 +6,8 @@ from dataclasses import dataclass
 
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QPushButton,
-    QLabel, QToolTip, QMenu, QDoubleSpinBox, QFormLayout,
-    QWidgetAction, QMessageBox, QFrame,
+    QLabel, QToolTip, QMenu, QDoubleSpinBox,
+    QMessageBox, QFrame,
 )
 from PySide6.QtCore import Qt, Signal, QRect, QPoint
 from PySide6.QtGui import (
@@ -50,6 +50,7 @@ class TimelineBar(QWidget):
         self.duration: float = 0.0
         self.boundaries: List[BoundaryMarker] = []
         self.candidate_times: List[float] = []
+        self.detection_preview_times: List[float] = []
         self.playhead_position: float = 0.0
         
         self._dragging_index: Optional[int] = None
@@ -64,7 +65,7 @@ class TimelineBar(QWidget):
         self.setAccessibleName("シーン境界タイムライン")
         self.setAccessibleDescription(
             "クリックでシーク、右クリックで境界の追加または削除、"
-            "境界をドラッグして位置を調整します"
+            "境界をドラッグして位置を調整します。青い点線はシーン検出の候補です"
         )
         
         # 色設定
@@ -96,6 +97,11 @@ class TimelineBar(QWidget):
 
     def set_candidates(self, candidates: List[float]):
         self.candidate_times = list(candidates)
+        self.update()
+
+    def set_detection_preview(self, candidates: List[float]):
+        """シーン検出の未確定境界を、確定境界とは分けて描画する。"""
+        self.detection_preview_times = list(candidates)
         self.update()
     
     def _time_to_x(self, time: float) -> int:
@@ -143,8 +149,11 @@ class TimelineBar(QWidget):
             self._draw_focus_indicator(painter)
             return
         
-        # シーン領域を描画
-        scene_times = [0.0] + [m.time for m in self.boundaries] + [self.duration]
+        # 検出プレビュー中は候補も仮境界として領域を分け、分割後の姿を見せる。
+        display_boundaries = sorted({
+            marker.time for marker in self.boundaries
+        } | set(self.detection_preview_times))
+        scene_times = [0.0] + display_boundaries + [self.duration]
         label_font = QFont()
         label_font.setPointSize(10)
         label_font.setBold(True)
@@ -167,14 +176,29 @@ class TimelineBar(QWidget):
                 cy = bar_top + (bar_height + fm.ascent() - fm.descent()) // 2
                 painter.drawText(cx, cy, label)
         
-        # 未適用の解析候補は点線で表示し、確定済み境界と区別する。
-        candidate_pen = QPen(QColor("#55bde6"), 2, Qt.DashLine)
+        # 未適用の音声・フェード解析候補は紫の点線で区別する。
+        candidate_pen = QPen(QColor("#b78cff"), 2, Qt.DashLine)
         painter.setPen(candidate_pen)
         for time in self.candidate_times:
             x = self._time_to_x(time)
             painter.drawLine(x, bar_top, x, bar_top + bar_height)
-            painter.setBrush(QBrush(QColor("#55bde6")))
+            painter.setBrush(QBrush(QColor("#b78cff")))
             painter.drawEllipse(QPoint(x, bar_top + bar_height // 2), 3, 3)
+
+        # シーン検出候補は青い点線と菱形で表示する。
+        detection_pen = QPen(QColor("#4da3ff"), 2, Qt.DashLine)
+        painter.setPen(detection_pen)
+        painter.setBrush(QBrush(QColor("#4da3ff")))
+        for time in self.detection_preview_times:
+            x = self._time_to_x(time)
+            painter.drawLine(x, bar_top - 3, x, bar_top + bar_height + 3)
+            diamond = [
+                QPoint(x, bar_top - 5),
+                QPoint(x + 4, bar_top - 1),
+                QPoint(x, bar_top + 3),
+                QPoint(x - 4, bar_top - 1),
+            ]
+            painter.drawPolygon(diamond)
 
         # 境界線を描画
         for i, marker in enumerate(self.boundaries):
@@ -363,13 +387,18 @@ class TimelineWidget(QWidget):
     auto_detect_cancel_requested = Signal()
     boundary_review_requested = Signal(float)
     boundary_candidates_applied = Signal(list)
+    scene_detection_preview_applied = Signal(list)
 
     def __init__(self):
         super().__init__()
         self.duration: float = 0.0
         self.scene_start_times: List[float] = []
         self.boundary_candidates: List[float] = []
+        self.detection_preview_times: List[float] = []
         self._detecting = False
+        self._detection_preview_cursor = 0
+        self._detection_preview_settings: Optional[tuple[float, float]] = None
+        self._detection_preview_result_text = ""
         self._reviewed_boundary_time: Optional[float] = None
         self._setup_ui()
     
@@ -394,7 +423,7 @@ class TimelineWidget(QWidget):
             "QPushButton:disabled { color: #777; }"
         )
         self.candidate_summary_button.setAccessibleName(
-            "未適用の境界候補を追加"
+            "未適用の音声・フェード解析候補を追加"
         )
         self.candidate_summary_button.setToolTip(
             "音声・フェード解析の候補をタイムラインへ追加します"
@@ -405,10 +434,7 @@ class TimelineWidget(QWidget):
         
         header_layout.addStretch()
 
-        # 検出設定は低頻度のため、常設せずメニュー内にまとめる。
-        settings_panel = QWidget()
-        settings_layout = QFormLayout(settings_panel)
-        settings_layout.setContentsMargins(10, 8, 10, 8)
+        # 検出設定は、結果と並べて調整できるプレビューパネルに置く。
         self.threshold_spin = QDoubleSpinBox()
         self.threshold_spin.setRange(0.5, 10.0)
         self.threshold_spin.setSingleStep(0.5)
@@ -430,8 +456,6 @@ class TimelineWidget(QWidget):
             "これより短いシーンは検出時に隣のシーンへ統合されます\n"
             "細切れのクリップが大量にできる場合は値を大きくしてください（0で無効）"
         )
-        settings_layout.addRow("感度", self.threshold_spin)
-        settings_layout.addRow("最小シーン長", self.min_scene_spin)
 
         # シーン検出ボタン（検出中は中止操作へ切り替わる）
         self.btn_auto_detect = QPushButton("シーン検出")
@@ -451,12 +475,9 @@ class TimelineWidget(QWidget):
         self.btn_more.setAccessibleName("タイムラインのその他の操作")
         self.btn_more.setToolTip("シーン検出設定、操作方法、境界のリセット")
         more_menu = QMenu(self.btn_more)
-        more_menu.addSection("シーン検出設定")
-        self.settings_action = QWidgetAction(more_menu)
-        self.settings_action.setText("シーン検出設定")
+        self.settings_action = more_menu.addAction("シーン検出設定を開く")
         self.settings_action.setToolTip("シーン検出の感度と最小シーン長")
-        self.settings_action.setDefaultWidget(settings_panel)
-        more_menu.addAction(self.settings_action)
+        self.settings_action.triggered.connect(self._open_detection_panel)
 
         self.btn_review_boundary = QPushButton("境界確認")
         self.btn_review_boundary.setToolTip(
@@ -497,6 +518,98 @@ class TimelineWidget(QWidget):
             self._open_boundary_review
         )
         layout.addWidget(self.timeline_bar)
+
+        # 閾値を変えながら、未確定の分割候補を試せるインラインパネル。
+        self.detection_panel = QFrame()
+        self.detection_panel.setObjectName("detectionPreviewPanel")
+        self.detection_panel.setStyleSheet(
+            "QFrame#detectionPreviewPanel { background-color: #20252a; "
+            "border: 1px solid #3d70a3; border-radius: 4px; }"
+        )
+        detection_layout = QVBoxLayout(self.detection_panel)
+        detection_layout.setContentsMargins(8, 6, 8, 6)
+        detection_layout.setSpacing(5)
+
+        detection_header = QHBoxLayout()
+        detection_title = QLabel("シーン検出プレビュー")
+        detection_title.setStyleSheet("font-weight: bold; color: #8fc4ff;")
+        detection_header.addWidget(detection_title)
+        detection_header.addStretch()
+        self.btn_close_detection_panel = QPushButton("閉じる")
+        self.btn_close_detection_panel.setToolTip("候補を反映せずに閉じます")
+        self.btn_close_detection_panel.clicked.connect(
+            self._close_detection_panel
+        )
+        detection_header.addWidget(self.btn_close_detection_panel)
+        detection_layout.addLayout(detection_header)
+
+        detection_settings = QHBoxLayout()
+        detection_settings.setSpacing(6)
+        threshold_label = QLabel("感度")
+        threshold_label.setBuddy(self.threshold_spin)
+        detection_settings.addWidget(threshold_label)
+        detection_settings.addWidget(self.threshold_spin)
+        min_scene_label = QLabel("最小シーン長")
+        min_scene_label.setBuddy(self.min_scene_spin)
+        detection_settings.addWidget(min_scene_label)
+        detection_settings.addWidget(self.min_scene_spin)
+        detection_settings.addStretch()
+        self.btn_detection_run = QPushButton("この設定で検出")
+        self.btn_detection_run.clicked.connect(self._on_auto_detect_clicked)
+        detection_settings.addWidget(self.btn_detection_run)
+        detection_layout.addLayout(detection_settings)
+
+        self.detection_status_label = QLabel(
+            "感度は小さいほど分割が増えます。設定を調整して検出してください"
+        )
+        self.detection_status_label.setWordWrap(True)
+        self.detection_status_label.setStyleSheet("color: #bbb;")
+        detection_layout.addWidget(self.detection_status_label)
+
+        detection_review = QHBoxLayout()
+        detection_review.setSpacing(5)
+        self.detection_candidate_label = QLabel("候補はまだありません")
+        self.detection_candidate_label.setStyleSheet("color: #8fc4ff;")
+        detection_review.addWidget(self.detection_candidate_label, stretch=1)
+        self.btn_detection_prev = QPushButton("前へ")
+        self.btn_detection_prev.setToolTip("前の分割候補へ移動")
+        self.btn_detection_prev.clicked.connect(
+            lambda: self._move_detection_candidate(-1)
+        )
+        detection_review.addWidget(self.btn_detection_prev)
+        self.btn_detection_next = QPushButton("次へ")
+        self.btn_detection_next.setToolTip("次の分割候補へ移動")
+        self.btn_detection_next.clicked.connect(
+            lambda: self._move_detection_candidate(1)
+        )
+        detection_review.addWidget(self.btn_detection_next)
+        self.btn_detection_compare = QPushButton("前後を確認")
+        self.btn_detection_compare.setToolTip(
+            "選択中の候補について、直前・直後の画像を並べます"
+        )
+        self.btn_detection_compare.clicked.connect(
+            self._compare_detection_candidate
+        )
+        detection_review.addWidget(self.btn_detection_compare)
+        self.btn_detection_apply = QPushButton("候補を反映")
+        self.btn_detection_apply.setToolTip(
+            "表示中の候補を分割点としてタイムラインへ反映します"
+        )
+        self.btn_detection_apply.clicked.connect(
+            self._apply_detection_preview
+        )
+        detection_review.addWidget(self.btn_detection_apply)
+        detection_layout.addLayout(detection_review)
+        layout.addWidget(self.detection_panel)
+        self.detection_panel.hide()
+
+        self.threshold_spin.valueChanged.connect(
+            self._on_detection_settings_changed
+        )
+        self.min_scene_spin.valueChanged.connect(
+            self._on_detection_settings_changed
+        )
+        self._sync_detection_preview_controls()
 
         # 境界確認は明示的に開いたときだけ現れるインラインパネル。
         self.boundary_review_panel = QFrame()
@@ -566,7 +679,166 @@ class TimelineWidget(QWidget):
         review_layout.addLayout(controls)
         layout.addWidget(self.boundary_review_panel)
         self.boundary_review_panel.hide()
-        
+
+    def _current_detection_settings_key(self) -> tuple[float, float]:
+        return (
+            round(self.threshold_spin.value(), 3),
+            round(self.min_scene_spin.value(), 3),
+        )
+
+    def _detection_preview_is_stale(self) -> bool:
+        return (
+            self._detection_preview_settings is not None
+            and self._detection_preview_settings
+            != self._current_detection_settings_key()
+        )
+
+    def _open_detection_panel(self, *_args):
+        self.boundary_review_panel.hide()
+        self.btn_auto_detect.hide()
+        self.detection_panel.show()
+        self._sync_detection_preview_controls()
+
+    def _close_detection_panel(self):
+        if self._detecting:
+            return
+        self.clear_detection_preview()
+        self.detection_panel.hide()
+        self.btn_auto_detect.show()
+        self._sync_recommended_action()
+
+    def clear_detection_preview(self):
+        self.detection_preview_times = []
+        self._detection_preview_cursor = 0
+        self._detection_preview_settings = None
+        self._detection_preview_result_text = ""
+        self.timeline_bar.set_detection_preview([])
+        self.detection_candidate_label.setText("候補はまだありません")
+        self.detection_status_label.setText(
+            "感度は小さいほど分割が増えます。設定を調整して検出してください"
+        )
+        self._sync_detection_preview_controls()
+
+    def set_detection_preview(self, candidates: List[float]):
+        """検出結果を確定せず、タイムライン上の仮境界として表示する。"""
+        normalized = sorted({
+            round(float(time), 3)
+            for time in candidates
+            if 0.0 < float(time) < self.duration
+            and not any(
+                abs(float(time) - boundary) <= 0.25
+                for boundary in self.scene_start_times
+            )
+        })
+        self.detection_preview_times = normalized
+        self._detection_preview_cursor = 0
+        self._detection_preview_settings = self._current_detection_settings_key()
+        self.timeline_bar.set_detection_preview(normalized)
+        self._open_detection_panel()
+
+        if normalized:
+            combined = sorted(set(self.scene_start_times + normalized))
+            self._detection_preview_result_text = (
+                f"新しい候補 {len(normalized)}個・反映後 {len(combined)}クリップ。"
+                "青い点線が未確定の分割位置です"
+            )
+            self._show_detection_candidate(0, seek=False)
+        else:
+            self._detection_preview_result_text = (
+                "この設定では新しい分割候補は見つかりませんでした"
+            )
+            self.detection_candidate_label.setText("候補なし")
+
+        self.detection_status_label.setText(self._detection_preview_result_text)
+        self._sync_detection_preview_controls()
+
+    def set_detection_status(self, message: str):
+        self._open_detection_panel()
+        self.detection_status_label.setText(message)
+
+    def _on_detection_settings_changed(self, *_args):
+        if self._detection_preview_is_stale():
+            self.detection_status_label.setText(
+                "設定が変わりました。「この設定で再検出」で候補を更新してください"
+            )
+        elif self._detection_preview_result_text:
+            self.detection_status_label.setText(
+                self._detection_preview_result_text
+            )
+        self._sync_detection_preview_controls()
+
+    def _sync_detection_preview_controls(self):
+        has_candidates = bool(self.detection_preview_times)
+        stale = self._detection_preview_is_stale()
+        interactive = not self._detecting
+        for button in (
+            self.btn_detection_prev,
+            self.btn_detection_next,
+            self.btn_detection_compare,
+        ):
+            button.setEnabled(has_candidates and interactive)
+        self.btn_detection_apply.setEnabled(
+            has_candidates and interactive and not stale
+        )
+        self.btn_close_detection_panel.setEnabled(interactive)
+
+        if self._detecting:
+            self.btn_detection_run.setText("検出を中止")
+        elif self._detection_preview_settings is not None:
+            self.btn_detection_run.setText("この設定で再検出")
+        else:
+            self.btn_detection_run.setText("この設定で検出")
+
+        self.btn_detection_run.setEnabled(self.duration > 0)
+        set_recommended_action(
+            self.btn_detection_run,
+            not self.detection_panel.isHidden()
+            and interactive
+            and (not has_candidates or stale),
+        )
+        set_recommended_action(
+            self.btn_detection_apply,
+            has_candidates and interactive and not stale,
+        )
+
+    def _show_detection_candidate(self, index: int, seek: bool = True):
+        if not self.detection_preview_times:
+            return
+        self._detection_preview_cursor = index % len(self.detection_preview_times)
+        time = self.detection_preview_times[self._detection_preview_cursor]
+        self.detection_candidate_label.setText(
+            f"候補 {self._detection_preview_cursor + 1}/"
+            f"{len(self.detection_preview_times)}・{format_seconds(time)}"
+        )
+        if seek:
+            self.timeline_bar.set_playhead(time)
+            self.seek_requested.emit(time)
+
+    def _move_detection_candidate(self, delta: int):
+        self._show_detection_candidate(
+            self._detection_preview_cursor + delta,
+            seek=True,
+        )
+
+    def _compare_detection_candidate(self):
+        if not self.detection_preview_times:
+            return
+        time = self.detection_preview_times[self._detection_preview_cursor]
+        self._open_boundary_review(time)
+
+    def _apply_detection_preview(self):
+        if (
+            not self.detection_preview_times
+            or self._detection_preview_is_stale()
+            or self._detecting
+        ):
+            return
+        candidates = list(self.detection_preview_times)
+        self.replace_boundaries(self.scene_start_times + candidates)
+        self.clear_detection_preview()
+        self.detection_panel.hide()
+        self.btn_auto_detect.show()
+        self.scene_detection_preview_applied.emit(candidates)
     
     def set_scenes(self, scene_start_times: List[float], duration: float):
         """シーン情報を設定"""
@@ -574,6 +846,9 @@ class TimelineWidget(QWidget):
         self.scene_start_times = scene_start_times.copy()
         self._reviewed_boundary_time = None
         self.boundary_review_panel.hide()
+        self.clear_detection_preview()
+        self.detection_panel.hide()
+        self.btn_auto_detect.show()
 
         self.timeline_bar.set_duration(duration)
         self.timeline_bar.set_boundaries(scene_start_times)
@@ -592,12 +867,15 @@ class TimelineWidget(QWidget):
         self.timeline_bar.set_duration(0.0)
         self.timeline_bar.set_boundaries([])
         self.set_boundary_candidates([])
+        self.clear_detection_preview()
         self.timeline_bar.set_playhead(0.0)
         self.btn_reset.setEnabled(False)
         self.btn_auto_detect.setEnabled(False)
         self.settings_action.setEnabled(False)
         self.btn_review_boundary.setEnabled(False)
         self.boundary_review_panel.hide()
+        self.detection_panel.hide()
+        self.btn_auto_detect.show()
         self._reviewed_boundary_time = None
         self._sync_recommended_action()
 
@@ -638,7 +916,7 @@ class TimelineWidget(QWidget):
         self.timeline_bar.set_candidates(normalized)
         if normalized:
             self.candidate_summary_button.setText(
-                f"候補 {len(normalized)}件を追加"
+                f"解析候補 {len(normalized)}件を追加"
             )
             self.candidate_summary_button.setEnabled(not self._detecting)
             self.candidate_summary_button.show()
@@ -655,6 +933,11 @@ class TimelineWidget(QWidget):
         """検出中の表示状態を切り替える（検出中はボタンが「中止」になる）"""
         self._detecting = detecting
         if detecting:
+            self._open_detection_panel()
+            self.detection_status_label.setText(
+                f"検出中… 感度 {self.threshold_spin.value():.1f}・"
+                f"最小シーン長 {self.min_scene_spin.value():.1f}秒"
+            )
             self.btn_auto_detect.setText("検出を中止")
             self.btn_auto_detect.setToolTip("実行中のシーン検出を中止します")
             self.btn_auto_detect.setEnabled(True)
@@ -675,6 +958,7 @@ class TimelineWidget(QWidget):
         self.candidate_summary_button.setEnabled(
             bool(self.boundary_candidates) and not detecting
         )
+        self._sync_detection_preview_controls()
         self._sync_recommended_action()
 
     def _sync_recommended_action(self):
@@ -683,13 +967,16 @@ class TimelineWidget(QWidget):
             self.duration > 0
             and len(self.scene_start_times) <= 1
             and not self._detecting
+            and self.detection_panel.isHidden()
             and self.btn_auto_detect.isEnabled(),
         )
 
     def _on_auto_detect_clicked(self):
         if self._detecting:
+            self.detection_status_label.setText("検出を中止しています…")
             self.auto_detect_cancel_requested.emit()
         else:
+            self._open_detection_panel()
             self.auto_detect_requested.emit()
 
     def get_detection_settings(self) -> SceneDetectionSettings:
