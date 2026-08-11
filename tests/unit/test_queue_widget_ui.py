@@ -181,6 +181,8 @@ def test_queue_actions_follow_selection_and_waiting_jobs(tmp_path):
 
     assert widget.action_remove.isEnabled() is False
     assert widget.btn_detect_all.isEnabled() is False
+    assert widget.btn_detect_all.isHidden() is True
+    assert widget.filter_combo.isHidden() is True
     assert widget.action_bulk_metadata.isEnabled() is False
     assert widget.btn_more.text() == "…"
     assert widget.action_bulk_metadata.text() == "一括設定…"
@@ -192,6 +194,7 @@ def test_queue_actions_follow_selection_and_waiting_jobs(tmp_path):
     widget.refresh()
 
     assert widget.btn_detect_all.isEnabled() is True
+    assert widget.btn_detect_all.isHidden() is False
     assert widget.btn_detect_all.text() == "シーン検出 1本"
     assert widget.action_bulk_metadata.isEnabled() is True
 

@@ -91,6 +91,7 @@ class ClipRow(QFrame):
             for issue in self._pending_issues
         )
         self._editing_enabled = True
+        self._finish_mode = True
         self.setFrameShape(QFrame.StyledPanel)
         self.setFixedHeight(
             112 if self._has_date_issue else (88 if self._pending_issues else 70)
@@ -370,6 +371,8 @@ class ClipRow(QFrame):
         self.selection_changed.emit(self.scene.index, state == Qt.Checked.value)
 
     def _show_date_editor(self):
+        if not self._finish_mode:
+            return
         _name, effective_date = self.job.get_scene_metadata(self.scene.index)
         self.review_date_edit.set_optional_date(effective_date)
         self.btn_edit_review_date.hide()
@@ -379,10 +382,10 @@ class ClipRow(QFrame):
 
     def _hide_date_editor(self):
         self.date_editor_bar.hide()
-        self.btn_edit_review_date.setVisible(self._has_date_issue)
-        self.setFixedHeight(
-            112 if self._has_date_issue else (88 if self._pending_issues else 70)
+        self.btn_edit_review_date.setVisible(
+            self._finish_mode and self._has_date_issue
         )
+        self._sync_row_height()
 
     def _apply_review_date(self):
         selected_date = self.review_date_edit.optional_date()
@@ -416,6 +419,34 @@ class ClipRow(QFrame):
         self.review_date_edit.setEnabled(enabled)
         self.btn_apply_review_date.setEnabled(enabled)
         self.btn_cancel_review_date.setEnabled(enabled)
+
+    def set_finish_mode(self, enabled: bool):
+        """分割中は、出力時にしか使わない行内設定を隠す。"""
+        self._finish_mode = bool(enabled)
+        self.filename_container.setVisible(self._finish_mode)
+        self.review_label.setVisible(
+            self._finish_mode and bool(self._pending_issues)
+        )
+        self.sensitive_check.setVisible(self._finish_mode)
+        self.btn_review_done.setVisible(
+            self._finish_mode and bool(self._pending_issues)
+        )
+        self.btn_edit_review_date.setVisible(
+            self._finish_mode and self._has_date_issue
+        )
+        if not self._finish_mode:
+            self.date_editor_bar.hide()
+        self._sync_row_height()
+
+    def _sync_row_height(self):
+        if not self._finish_mode:
+            self.setFixedHeight(62)
+        elif not self.date_editor_bar.isHidden():
+            self.setFixedHeight(140)
+        else:
+            self.setFixedHeight(
+                112 if self._has_date_issue else (88 if self._pending_issues else 70)
+            )
 
     def set_merge_mode(self, enabled: bool):
         self.select_check.setVisible(enabled)
@@ -461,12 +492,45 @@ class ClipListWidget(QWidget):
         self._exporting = False
         self._export_cancelling = False
         self._merge_mode = False
+        self._finish_expanded = False
         self._setup_ui()
 
     def _setup_ui(self):
         layout = QVBoxLayout(self)
         layout.setContentsMargins(5, 5, 5, 5)
         layout.setSpacing(5)
+
+        # 分割中に必要な一覧だけを常設し、仕上げ設定は必要時に開く。
+        self.workflow_bar = QFrame()
+        self.workflow_bar.setObjectName("clipWorkflowBar")
+        self.workflow_bar.setStyleSheet(
+            "QFrame#clipWorkflowBar { background-color: #242424; "
+            "border: 1px solid #3a3a3a; border-radius: 4px; }"
+        )
+        workflow_layout = QHBoxLayout(self.workflow_bar)
+        workflow_layout.setContentsMargins(8, 5, 8, 5)
+        workflow_layout.setSpacing(6)
+        self.clip_summary_label = QLabel("クリップ")
+        self.clip_summary_label.setStyleSheet("font-weight: bold;")
+        workflow_layout.addWidget(self.clip_summary_label)
+        workflow_layout.addStretch()
+        self.finish_summary_label = QLabel()
+        self.finish_summary_label.setStyleSheet("color: #ffd27a;")
+        workflow_layout.addWidget(self.finish_summary_label)
+        self.btn_toggle_finish = QPushButton("仕上げ・書き出し")
+        self.btn_toggle_finish.setCheckable(True)
+        self.btn_toggle_finish.setAccessibleName("仕上げと書き出しの設定を表示")
+        self.btn_toggle_finish.setToolTip(
+            "出力名、日付、補正、結合、確認、書き出しを表示します"
+        )
+        self.btn_toggle_finish.toggled.connect(self._set_finish_expanded)
+        workflow_layout.addWidget(self.btn_toggle_finish)
+        layout.addWidget(self.workflow_bar)
+
+        self.finish_panel = QWidget()
+        finish_layout = QVBoxLayout(self.finish_panel)
+        finish_layout.setContentsMargins(0, 0, 0, 0)
+        finish_layout.setSpacing(5)
 
         # メタデータバー
         self.meta_bar = QFrame()
@@ -520,7 +584,7 @@ class ClipListWidget(QWidget):
         date_layout.addStretch()
         meta_layout.addLayout(date_layout)
 
-        layout.addWidget(self.meta_bar)
+        finish_layout.addWidget(self.meta_bar)
 
         # 操作バー
         self.action_bar = QFrame()
@@ -626,7 +690,7 @@ class ClipListWidget(QWidget):
         export_layout.addWidget(self.btn_export)
         action_layout.addLayout(export_layout)
 
-        layout.addWidget(self.action_bar)
+        finish_layout.addWidget(self.action_bar)
 
         self.review_bar = QFrame()
         self.review_bar.setObjectName("reviewBar")
@@ -658,7 +722,8 @@ class ClipListWidget(QWidget):
         self.review_only_check.toggled.connect(lambda _checked: self.refresh_clips())
         review_filter_layout.addWidget(self.review_only_check)
         review_layout.addLayout(review_filter_layout)
-        layout.addWidget(self.review_bar)
+        finish_layout.insertWidget(0, self.review_bar)
+        layout.addWidget(self.finish_panel)
 
         # スクロール可能なクリップリスト
         self.scroll_area = QScrollArea()
@@ -680,10 +745,29 @@ class ClipListWidget(QWidget):
         self.btn_clear_date.setVisible(self.date_edit.optional_date() is not None)
 
     def _set_editor_visible(self, visible: bool):
-        self.meta_bar.setVisible(visible)
-        self.action_bar.setVisible(visible)
-        self.review_bar.setVisible(visible)
+        self.workflow_bar.setVisible(visible)
+        self.finish_panel.setVisible(visible and self._finish_expanded)
         self.scroll_area.setVisible(visible)
+
+    def _set_finish_expanded(self, expanded: bool):
+        expanded = bool(expanded and self.current_job is not None)
+        if not expanded and self._merge_mode:
+            self._toggle_merge_mode(False)
+        self._finish_expanded = expanded
+        self.btn_toggle_finish.blockSignals(True)
+        self.btn_toggle_finish.setChecked(expanded)
+        self.btn_toggle_finish.blockSignals(False)
+        self.btn_toggle_finish.setText(
+            "仕上げを閉じる" if expanded else "仕上げ・書き出し"
+        )
+        self.btn_toggle_finish.setAccessibleName(
+            "仕上げと書き出しの設定を閉じる"
+            if expanded
+            else "仕上げと書き出しの設定を表示"
+        )
+        self.finish_panel.setVisible(expanded)
+        for row in self._clip_rows:
+            row.set_finish_mode(expanded)
 
     def _is_busy(self) -> bool:
         return (
@@ -768,12 +852,14 @@ class ClipListWidget(QWidget):
 
     def set_job(self, job: VideoJob):
         """ジョブを設定してクリップ一覧を構築"""
+        keep_finish_open = self.current_job is job and self._finish_expanded
         self.current_job = job
         self._merge_mode = False
         self.btn_merge_mode.setChecked(False)
         self.btn_merge_mode.setText("選択して結合")
         self.merge_bar.hide()
         self._set_editor_visible(True)
+        self._set_finish_expanded(keep_finish_open)
 
         # 前のジョブのメタデータ入力を引きずらないようリセット
         self.event_name_edit.blockSignals(True)
@@ -801,9 +887,11 @@ class ClipListWidget(QWidget):
         self.current_job = None
         self._exporting = False
         self._merge_mode = False
+        self._finish_expanded = False
         self.btn_merge_mode.setChecked(False)
         self.merge_bar.hide()
         self._set_editor_visible(False)
+        self._set_finish_expanded(False)
         for row in self._clip_rows:
             row.setParent(None)
             row.deleteLater()
@@ -855,6 +943,7 @@ class ClipListWidget(QWidget):
             row.selection_changed.connect(self._on_selection_changed)
             row.review_acknowledged.connect(self._on_review_acknowledged)
             row.set_merge_mode(self._merge_mode)
+            row.set_finish_mode(self._finish_expanded)
             self._clip_rows.append(row)
             self._clip_rows_by_scene_index[scene.index] = row
             self.scroll_layout.addWidget(row)
@@ -867,10 +956,18 @@ class ClipListWidget(QWidget):
     def _refresh_review_state(self):
         if not self.current_job:
             self.review_summary_label.setText("確認事項なし")
+            self.clip_summary_label.setText("クリップ")
+            self.finish_summary_label.clear()
             self.btn_next_review.setEnabled(False)
             self.review_only_check.setEnabled(False)
             return
         count = pending_review_count(self.current_job)
+        removed = sum(not scene.keep for scene in self.current_job.scenes)
+        summary = f"クリップ {len(self.current_job.scenes)}"
+        if removed:
+            summary += f"・削除 {removed}"
+        self.clip_summary_label.setText(summary)
+        self.finish_summary_label.setText(f"確認 {count}" if count else "")
         self.review_summary_label.setText(
             f"確認事項 {count}件" if count else "確認事項なし"
         )
@@ -1118,6 +1215,8 @@ class ClipListWidget(QWidget):
         """書き出し中は編集・後処理系の操作を止める"""
         self._exporting = exporting
         self._export_cancelling = False
+        if exporting:
+            self._set_finish_expanded(True)
         self.btn_export.setText("書き出しを中止" if exporting else "書き出し")
         self._update_action_state()
 

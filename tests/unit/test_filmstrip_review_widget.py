@@ -13,6 +13,7 @@ from app.ui.filmstrip_review_widget import (
     filmstrip_row_count,
 )
 from app.ui.main_window import MainWindow
+from app.ui.timeline_widget import TimelineWidget
 
 
 def _app():
@@ -106,6 +107,22 @@ def test_keyboard_can_seek_and_return_to_editor(tmp_path):
     canvas.close()
 
 
+def test_timeline_only_shows_boundary_review_when_a_boundary_exists():
+    _app()
+    timeline = TimelineWidget()
+    timeline.set_scenes([0.0], 120.0)
+
+    assert timeline.btn_filmstrip_review.isEnabled() is True
+    assert timeline.btn_review_boundary.isHidden() is True
+
+    timeline.add_boundary(30.0)
+    assert timeline.btn_review_boundary.isHidden() is False
+
+    timeline.replace_boundaries([0.0])
+    assert timeline.btn_review_boundary.isHidden() is True
+    timeline.close()
+
+
 def test_main_window_switches_between_editor_and_filmstrip(tmp_path):
     _app()
     window = MainWindow()
@@ -116,10 +133,9 @@ def test_main_window_switches_between_editor_and_filmstrip(tmp_path):
     window._update_timeline(job)
     window.timeline_widget.set_detection_preview([44.0])
 
-    window.btn_filmstrip_view.click()
+    window.timeline_widget.btn_filmstrip_review.click()
 
     assert window.workspace_stack.currentWidget() is window.filmstrip_review_widget
-    assert window.btn_filmstrip_view.isChecked() is True
     assert window.filmstrip_review_widget.canvas.candidate_times == [18.0, 44.0, 92.0]
 
     sought = []
@@ -128,5 +144,4 @@ def test_main_window_switches_between_editor_and_filmstrip(tmp_path):
 
     assert sought == [81.5]
     assert window.workspace_stack.currentWidget() is window.editor_splitter
-    assert window.btn_editor_view.isChecked() is True
     window.close()

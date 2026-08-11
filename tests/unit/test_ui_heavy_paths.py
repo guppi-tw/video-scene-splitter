@@ -218,6 +218,14 @@ def test_clip_editor_hides_low_frequency_controls_until_needed(tmp_path):
     widget.set_job(job)
     row = widget._clip_rows[0]
 
+    assert widget.finish_panel.isHidden() is True
+    assert row.filename_container.isHidden() is True
+    assert row.sensitive_check.isHidden() is True
+    assert row.keep_check.isHidden() is False
+    assert row.height() == 62
+
+    widget.btn_toggle_finish.click()
+
     assert widget.output_name_label.text() == "出力名"
     assert widget.btn_clear_date.isHidden() is True
     assert row.select_check.isHidden() is True
@@ -339,6 +347,7 @@ def test_detected_date_can_be_checked_and_corrected_inline(tmp_path):
     )
     widget = ClipListWidget()
     widget.set_job(job)
+    widget.btn_toggle_finish.click()
     row = widget._clip_rows[0]
 
     assert row.review_label.text() == "検出日付: 1998/08/12"
@@ -1077,8 +1086,8 @@ def test_clip_editor_controls_are_hidden_until_job_is_loaded(tmp_path):
     _app()
     widget = ClipListWidget()
 
-    assert widget.meta_bar.isHidden() is True
-    assert widget.action_bar.isHidden() is True
+    assert widget.workflow_bar.isHidden() is True
+    assert widget.finish_panel.isHidden() is True
     assert widget.scroll_area.isHidden() is True
 
     video_path = tmp_path / "video.mp4"
@@ -1091,13 +1100,18 @@ def test_clip_editor_controls_are_hidden_until_job_is_loaded(tmp_path):
     )
     widget.set_job(job)
 
-    assert widget.meta_bar.isHidden() is False
-    assert widget.action_bar.isHidden() is False
+    assert widget.workflow_bar.isHidden() is False
+    assert widget.finish_panel.isHidden() is True
     assert widget.scroll_area.isHidden() is False
+    assert widget.btn_toggle_finish.text() == "仕上げ・書き出し"
+
+    widget.btn_toggle_finish.click()
+    assert widget.finish_panel.isHidden() is False
+    assert widget.btn_toggle_finish.text() == "仕上げを閉じる"
 
     widget.clear()
-    assert widget.meta_bar.isHidden() is True
-    assert widget.action_bar.isHidden() is True
+    assert widget.workflow_bar.isHidden() is True
+    assert widget.finish_panel.isHidden() is True
     assert widget.scroll_area.isHidden() is True
     widget.close()
 

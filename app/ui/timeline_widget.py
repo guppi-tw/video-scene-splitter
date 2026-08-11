@@ -388,6 +388,7 @@ class TimelineWidget(QWidget):
     boundary_review_requested = Signal(float)
     boundary_candidates_applied = Signal(list)
     scene_detection_preview_applied = Signal(list)
+    filmstrip_review_requested = Signal()
 
     def __init__(self):
         super().__init__()
@@ -433,6 +434,19 @@ class TimelineWidget(QWidget):
         header_layout.addWidget(self.candidate_summary_button)
         
         header_layout.addStretch()
+
+        self.btn_filmstrip_review = QPushButton("全体を見る")
+        self.btn_filmstrip_review.setToolTip(
+            "動画全体を折り返したフィルムレビューで確認します"
+        )
+        self.btn_filmstrip_review.setAccessibleName(
+            "動画全体をフィルムレビューで表示"
+        )
+        self.btn_filmstrip_review.setEnabled(False)
+        self.btn_filmstrip_review.clicked.connect(
+            self.filmstrip_review_requested.emit
+        )
+        header_layout.addWidget(self.btn_filmstrip_review)
 
         # 検出設定は、結果と並べて調整できるプレビューパネルに置く。
         self.threshold_spin = QDoubleSpinBox()
@@ -858,6 +872,8 @@ class TimelineWidget(QWidget):
         self.btn_auto_detect.setEnabled(True)
         self.settings_action.setEnabled(True)
         self.btn_review_boundary.setEnabled(len(self.scene_start_times) > 1)
+        self.btn_review_boundary.setVisible(len(self.scene_start_times) > 1)
+        self.btn_filmstrip_review.setEnabled(True)
         self._sync_recommended_action()
 
     def clear(self):
@@ -873,6 +889,8 @@ class TimelineWidget(QWidget):
         self.btn_auto_detect.setEnabled(False)
         self.settings_action.setEnabled(False)
         self.btn_review_boundary.setEnabled(False)
+        self.btn_review_boundary.hide()
+        self.btn_filmstrip_review.setEnabled(False)
         self.boundary_review_panel.hide()
         self.detection_panel.hide()
         self.btn_auto_detect.show()
@@ -902,6 +920,7 @@ class TimelineWidget(QWidget):
         self.timeline_bar.set_boundaries(normalized)
         self.btn_reset.setEnabled(True)
         self.btn_review_boundary.setEnabled(len(self.scene_start_times) > 1)
+        self.btn_review_boundary.setVisible(len(self.scene_start_times) > 1)
         self._sync_recommended_action()
         self._emit_changes()
 
@@ -1022,6 +1041,8 @@ class TimelineWidget(QWidget):
         self.scene_start_times = new_times
         
         self.timeline_bar.set_boundaries(new_times)
+        self.btn_review_boundary.show()
+        self.btn_review_boundary.setEnabled(not self._detecting)
         self._emit_changes()
     
     def _on_boundary_removed(self, index: int):
@@ -1030,6 +1051,7 @@ class TimelineWidget(QWidget):
             del self.scene_start_times[index]
             self.timeline_bar.set_boundaries(self.scene_start_times)
             self.btn_review_boundary.setEnabled(len(self.scene_start_times) > 1)
+            self.btn_review_boundary.setVisible(len(self.scene_start_times) > 1)
             self.boundary_review_panel.hide()
             self._emit_changes()
     

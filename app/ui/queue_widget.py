@@ -102,8 +102,9 @@ class QueueWidget(QWidget):
         btn_layout.setContentsMargins(8, 5, 8, 5)
         btn_layout.setSpacing(4)
 
-        self.btn_add = QPushButton("動画を追加")
+        self.btn_add = QPushButton("追加")
         self.btn_add.setAccessibleName("動画を追加")
+        self.btn_add.setToolTip("動画ファイルまたはフォルダを追加")
         add_menu = QMenu(self.btn_add)
         self.action_add_file = add_menu.addAction("ファイルを選択…")
         self.action_add_folder = add_menu.addAction("フォルダを選択…")
@@ -144,12 +145,12 @@ class QueueWidget(QWidget):
         primary_layout.setSpacing(5)
         primary_layout.addWidget(self.btn_add, stretch=1)
         primary_layout.addWidget(self.btn_open)
+        primary_layout.addWidget(self.btn_more)
         btn_layout.addLayout(primary_layout)
 
         secondary_layout = QHBoxLayout()
         secondary_layout.setSpacing(5)
         secondary_layout.addWidget(self.btn_detect_all, stretch=1)
-        secondary_layout.addWidget(self.btn_more)
         btn_layout.addLayout(secondary_layout)
 
         layout.addWidget(action_bar)
@@ -204,18 +205,21 @@ class QueueWidget(QWidget):
         else:
             self.btn_open.setText("開く")
         if not self._detect_all_available:
+            self.btn_detect_all.show()
             self.btn_detect_all.setEnabled(True)
             self.btn_detect_all.setText("進捗を表示")
             self.btn_detect_all.setToolTip(
                 "実行中の一括シーン検出の進捗画面を表示します"
             )
         elif waiting_count:
+            self.btn_detect_all.show()
             self.btn_detect_all.setEnabled(True)
             self.btn_detect_all.setText(f"シーン検出 {waiting_count}本")
             self.btn_detect_all.setToolTip(
                 f"待機中の動画 {waiting_count} 本をまとめてシーン検出します"
             )
         else:
+            self.btn_detect_all.hide()
             self.btn_detect_all.setEnabled(False)
             self.btn_detect_all.setText("シーン検出")
             self.btn_detect_all.setToolTip("待機中の動画がありません")
@@ -361,6 +365,9 @@ class QueueWidget(QWidget):
 
     def refresh(self):
         """ツリーを更新（動画 → 分割クリップ）"""
+        jobs = self.job_queue.get_all_jobs()
+        # 少数のキューでは全件が一目で見えるため、絞り込みを常設しない。
+        self.filter_combo.setVisible(len(jobs) > 3)
         # 展開状態と選択中ジョブを保持
         expanded = {
             self.tree.topLevelItem(i).data(0, _ROLE_JOB_ID)
@@ -374,7 +381,7 @@ class QueueWidget(QWidget):
         try:
             self.tree.clear()
 
-            for job in self.job_queue.get_all_jobs():
+            for job in jobs:
                 if not self._matches_filter(job):
                     continue
                 scene_count = len(job.scenes)

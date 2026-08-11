@@ -6,11 +6,11 @@ from pathlib import Path
 from typing import List, Optional
 
 from PySide6.QtWidgets import (
-    QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
+    QMainWindow, QWidget, QVBoxLayout,
     QSplitter, QPushButton, QMessageBox, QApplication,
     QAbstractButton, QAbstractItemView, QAbstractSlider,
     QAbstractSpinBox, QComboBox, QLineEdit, QTextEdit, QStackedLayout, QDialog,
-    QButtonGroup, QFrame, QLabel, QStackedWidget,
+    QStackedWidget,
 )
 from PySide6.QtCore import Qt, QThread, QTimer
 from PySide6.QtGui import QShortcut, QKeySequence
@@ -124,37 +124,6 @@ class MainWindow(QMainWindow):
         main_layout.setContentsMargins(8, 8, 8, 8)
         main_layout.setSpacing(6)
 
-        # 編集画面と全体レビューを、同じウィンドウ内で切り替える。
-        self.view_switch_bar = QFrame()
-        self.view_switch_bar.setObjectName("workspaceViewBar")
-        view_switch_layout = QHBoxLayout(self.view_switch_bar)
-        view_switch_layout.setContentsMargins(5, 4, 5, 4)
-        view_switch_layout.setSpacing(2)
-        view_switch_layout.addWidget(QLabel("表示"))
-
-        self.btn_editor_view = QPushButton("通常編集")
-        self.btn_editor_view.setObjectName("workspaceViewButton")
-        self.btn_editor_view.setCheckable(True)
-        self.btn_editor_view.setChecked(True)
-        self.btn_editor_view.setAccessibleName("通常編集を表示")
-        self.btn_editor_view.setToolTip("プレビュー、タイムライン、クリップ設定を表示")
-        view_switch_layout.addWidget(self.btn_editor_view)
-
-        self.btn_filmstrip_view = QPushButton("フィルムレビュー")
-        self.btn_filmstrip_view.setObjectName("workspaceViewButton")
-        self.btn_filmstrip_view.setCheckable(True)
-        self.btn_filmstrip_view.setAccessibleName("フィルムレビューを表示")
-        self.btn_filmstrip_view.setToolTip("動画全体を折り返しタイムラインで確認")
-        view_switch_layout.addWidget(self.btn_filmstrip_view)
-        view_switch_layout.addStretch()
-
-        self.view_button_group = QButtonGroup(self)
-        self.view_button_group.setExclusive(True)
-        self.view_button_group.addButton(self.btn_editor_view)
-        self.view_button_group.addButton(self.btn_filmstrip_view)
-        self.view_switch_bar.hide()
-        main_layout.addWidget(self.view_switch_bar)
-
         self.workspace_stack = QStackedWidget()
 
         # メインスプリッター（左: キュー、中央: プレビュー+タイムライン、右: クリップリスト）
@@ -247,11 +216,8 @@ class MainWindow(QMainWindow):
         self.filmstrip_review_widget.edit_requested.connect(
             self._on_filmstrip_edit_requested
         )
-        self.btn_editor_view.clicked.connect(
-            lambda _checked=False: self._set_workspace_view(False)
-        )
-        self.btn_filmstrip_view.clicked.connect(
-            lambda _checked=False: self._set_workspace_view(True)
+        self.timeline_widget.filmstrip_review_requested.connect(
+            lambda: self._set_workspace_view(True)
         )
 
         # タイムライン → 境界変更
@@ -320,15 +286,11 @@ class MainWindow(QMainWindow):
     def _show_editor_layout(self):
         self.center_stack.setCurrentWidget(self.editor_center)
         self.clip_list_widget.show()
-        self.view_switch_bar.show()
-        self.btn_filmstrip_view.setEnabled(True)
 
     def _show_empty_layout(self):
         self._set_workspace_view(False)
         self.center_stack.setCurrentWidget(self.drop_zone)
         self.clip_list_widget.hide()
-        self.view_switch_bar.hide()
-        self.btn_filmstrip_view.setEnabled(False)
         self.filmstrip_review_widget.set_job(None)
 
     def _set_workspace_view(self, filmstrip: bool):
@@ -343,10 +305,8 @@ class MainWindow(QMainWindow):
                 self.preview_widget.get_position()
             )
             self.workspace_stack.setCurrentWidget(self.filmstrip_review_widget)
-            self.btn_filmstrip_view.setChecked(True)
         else:
             self.workspace_stack.setCurrentWidget(self.editor_splitter)
-            self.btn_editor_view.setChecked(True)
 
     def _on_filmstrip_edit_requested(self, position: float):
         """レビュー位置を保ったまま通常編集へ戻る。"""
@@ -1593,26 +1553,6 @@ class MainWindow(QMainWindow):
                 color: #666;
                 border-color: #444;
                 font-weight: normal;
-            }
-            QFrame#workspaceViewBar {
-                background-color: #25282c;
-                border: 1px solid #3a3f45;
-                border-radius: 5px;
-            }
-            QPushButton#workspaceViewButton {
-                background-color: transparent;
-                border: 1px solid transparent;
-                padding: 5px 14px;
-            }
-            QPushButton#workspaceViewButton:hover {
-                background-color: #34383e;
-                border-color: #4b5159;
-            }
-            QPushButton#workspaceViewButton:checked {
-                background-color: #2d5275;
-                border-color: #4f8fc5;
-                color: #ffffff;
-                font-weight: bold;
             }
             QFrame#filmstripHeader,
             QFrame#filmstripLegend {
