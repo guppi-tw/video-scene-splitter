@@ -6,10 +6,11 @@ from pathlib import Path
 from typing import List, Optional
 
 from PySide6.QtWidgets import (
-    QMainWindow, QWidget, QVBoxLayout,
+    QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QSplitter, QPushButton, QMessageBox, QApplication,
     QAbstractButton, QAbstractItemView, QAbstractSlider,
-    QAbstractSpinBox, QComboBox, QLineEdit, QTextEdit, QStackedLayout, QDialog
+    QAbstractSpinBox, QComboBox, QLineEdit, QTextEdit, QStackedLayout, QDialog,
+    QButtonGroup, QFrame, QLabel, QStackedWidget,
 )
 from PySide6.QtCore import Qt, QThread, QTimer
 from PySide6.QtGui import QShortcut, QKeySequence
@@ -26,6 +27,7 @@ from app.ui.batch_progress_dialog import BatchProgressDialog
 from app.ui.bulk_metadata_dialog import BulkMetadataDialog
 from app.ui.preview_widget import PreviewWidget
 from app.ui.timeline_widget import TimelineWidget
+from app.ui.filmstrip_review_widget import FilmstripReviewWidget
 from app.ui.drop_zone import VideoDropZone
 from app.ui.workers import (
     ThumbnailWorker, ExportWorker, SceneDetectionWorker,
@@ -119,9 +121,45 @@ class MainWindow(QMainWindow):
         self.setCentralWidget(central)
 
         main_layout = QVBoxLayout(central)
+        main_layout.setContentsMargins(8, 8, 8, 8)
+        main_layout.setSpacing(6)
+
+        # 編集画面と全体レビューを、同じウィンドウ内で切り替える。
+        self.view_switch_bar = QFrame()
+        self.view_switch_bar.setObjectName("workspaceViewBar")
+        view_switch_layout = QHBoxLayout(self.view_switch_bar)
+        view_switch_layout.setContentsMargins(5, 4, 5, 4)
+        view_switch_layout.setSpacing(2)
+        view_switch_layout.addWidget(QLabel("表示"))
+
+        self.btn_editor_view = QPushButton("通常編集")
+        self.btn_editor_view.setObjectName("workspaceViewButton")
+        self.btn_editor_view.setCheckable(True)
+        self.btn_editor_view.setChecked(True)
+        self.btn_editor_view.setAccessibleName("通常編集を表示")
+        self.btn_editor_view.setToolTip("プレビュー、タイムライン、クリップ設定を表示")
+        view_switch_layout.addWidget(self.btn_editor_view)
+
+        self.btn_filmstrip_view = QPushButton("フィルムレビュー")
+        self.btn_filmstrip_view.setObjectName("workspaceViewButton")
+        self.btn_filmstrip_view.setCheckable(True)
+        self.btn_filmstrip_view.setAccessibleName("フィルムレビューを表示")
+        self.btn_filmstrip_view.setToolTip("動画全体を折り返しタイムラインで確認")
+        view_switch_layout.addWidget(self.btn_filmstrip_view)
+        view_switch_layout.addStretch()
+
+        self.view_button_group = QButtonGroup(self)
+        self.view_button_group.setExclusive(True)
+        self.view_button_group.addButton(self.btn_editor_view)
+        self.view_button_group.addButton(self.btn_filmstrip_view)
+        self.view_switch_bar.hide()
+        main_layout.addWidget(self.view_switch_bar)
+
+        self.workspace_stack = QStackedWidget()
 
         # メインスプリッター（左: キュー、中央: プレビュー+タイムライン、右: クリップリスト）
         splitter = QSplitter(Qt.Horizontal)
+        self.editor_splitter = splitter
 
         # 左側: キュー
         self.queue_widget = QueueWidget(self.job_queue)
@@ -162,7 +200,12 @@ class MainWindow(QMainWindow):
         splitter.setStretchFactor(0, 0)
         splitter.setStretchFactor(1, 2)
         splitter.setStretchFactor(2, 1)
-        main_layout.addWidget(splitter, stretch=1)
+        self.workspace_stack.addWidget(splitter)
+
+        self.filmstrip_review_widget = FilmstripReviewWidget()
+        self.workspace_stack.addWidget(self.filmstrip_review_widget)
+        self.workspace_stack.setCurrentWidget(splitter)
+        main_layout.addWidget(self.workspace_stack, stretch=1)
 
         # 下部: コンパクトな状態表示。詳細ログは内部の開閉操作で表示する。
         self.log_widget = LogWidget()
@@ -184,6 +227,9 @@ class MainWindow(QMainWindow):
 
         # プレビュー → タイムライン同期
         self.preview_widget.position_changed.connect(self.timeline_widget.set_playhead)
+        self.preview_widget.position_changed.connect(
+            self.filmstrip_review_widget.set_playhead
+        )
 
         # プレビュー → 分割
         self.preview_widget.split_requested.connect(self._on_split_at_position)
@@ -193,6 +239,20 @@ class MainWindow(QMainWindow):
 
         # タイムライン → シーク
         self.timeline_widget.seek_requested.connect(self.preview_widget.seek_to)
+
+        # フィルムレビュー → シーク／通常編集へ戻る
+        self.filmstrip_review_widget.seek_requested.connect(
+            self.preview_widget.seek_to
+        )
+        self.filmstrip_review_widget.edit_requested.connect(
+            self._on_filmstrip_edit_requested
+        )
+        self.btn_editor_view.clicked.connect(
+            lambda _checked=False: self._set_workspace_view(False)
+        )
+        self.btn_filmstrip_view.clicked.connect(
+            lambda _checked=False: self._set_workspace_view(True)
+        )
 
         # タイムライン → 境界変更
         self.timeline_widget.boundaries_changed.connect(self._on_boundaries_changed)
@@ -260,10 +320,47 @@ class MainWindow(QMainWindow):
     def _show_editor_layout(self):
         self.center_stack.setCurrentWidget(self.editor_center)
         self.clip_list_widget.show()
+        self.view_switch_bar.show()
+        self.btn_filmstrip_view.setEnabled(True)
 
     def _show_empty_layout(self):
+        self._set_workspace_view(False)
         self.center_stack.setCurrentWidget(self.drop_zone)
         self.clip_list_widget.hide()
+        self.view_switch_bar.hide()
+        self.btn_filmstrip_view.setEnabled(False)
+        self.filmstrip_review_widget.set_job(None)
+
+    def _set_workspace_view(self, filmstrip: bool):
+        """通常編集と全体レビューを切り替える。"""
+        show_filmstrip = bool(
+            filmstrip and self.current_job is not None and self.current_job.scenes
+        )
+        if show_filmstrip:
+            self._sync_filmstrip_candidates()
+            self.filmstrip_review_widget.refresh()
+            self.filmstrip_review_widget.set_playhead(
+                self.preview_widget.get_position()
+            )
+            self.workspace_stack.setCurrentWidget(self.filmstrip_review_widget)
+            self.btn_filmstrip_view.setChecked(True)
+        else:
+            self.workspace_stack.setCurrentWidget(self.editor_splitter)
+            self.btn_editor_view.setChecked(True)
+
+    def _on_filmstrip_edit_requested(self, position: float):
+        """レビュー位置を保ったまま通常編集へ戻る。"""
+        self.preview_widget.seek_to(position)
+        self._set_workspace_view(False)
+
+    def _sync_filmstrip_candidates(self):
+        """解析由来とシーン検出由来の未適用候補をまとめて表示する。"""
+        if self.current_job is None:
+            self.filmstrip_review_widget.set_candidate_times([])
+            return
+        candidates = list(self.current_job.suggested_boundaries)
+        candidates.extend(self.timeline_widget.detection_preview_times)
+        self.filmstrip_review_widget.set_candidate_times(candidates)
 
     def _schedule_autosave(self):
         if self._session_store is not None:
@@ -293,6 +390,7 @@ class MainWindow(QMainWindow):
 
     def _on_job_edited(self):
         self.queue_widget.refresh()
+        self.filmstrip_review_widget.refresh()
         self._schedule_autosave()
 
     def _restore_edit_snapshot(self, snapshot: JobEditSnapshot):
@@ -312,6 +410,7 @@ class MainWindow(QMainWindow):
             self.timeline_widget.set_boundary_candidates(
                 self.current_job.suggested_boundaries
             )
+            self.filmstrip_review_widget.set_job(self.current_job)
             self.queue_widget.refresh()
             if not _boundaries_equal(previous_boundaries, boundaries):
                 self._regenerate_thumbnails()
@@ -594,8 +693,7 @@ class MainWindow(QMainWindow):
         self.queue_widget.refresh()
         self.clip_list_widget.set_job(job)
         self.preview_widget.load_video(job.source_path)
-        self.timeline_widget.set_scenes(boundaries, duration)
-        self.timeline_widget.set_boundary_candidates(job.suggested_boundaries)
+        self._update_timeline(job)
 
         # サムネイルはバックグラウンドで生成（UIをブロックしない）
         self._regenerate_thumbnails()
@@ -793,6 +891,7 @@ class MainWindow(QMainWindow):
         self.timeline_widget.set_boundary_candidates(
             self.current_job.suggested_boundaries
         )
+        self._sync_filmstrip_candidates()
         self.clip_list_widget.refresh_clips()
         self.queue_widget.refresh()
         self.log_widget.append_log(
@@ -823,6 +922,7 @@ class MainWindow(QMainWindow):
         if not self.current_job:
             return
         self.current_job.suggested_boundaries = []
+        self._sync_filmstrip_candidates()
         self.log_widget.append_log(
             f"音声・フェードの境界候補 {len(candidates)}件を追加しました"
         )
@@ -871,6 +971,7 @@ class MainWindow(QMainWindow):
         if self.thumbnail_worker is None or self.thumbnail_worker.job is not self.current_job:
             return
         self.clip_list_widget.update_thumbnail(scene_index, path)
+        self.filmstrip_review_widget.update_thumbnail(scene_index, path)
 
     def _on_thumbnail_finished(self):
         """サムネイル生成全完了"""
@@ -958,6 +1059,7 @@ class MainWindow(QMainWindow):
             return
 
         self.timeline_widget.set_detection_preview(detected_boundaries)
+        self._sync_filmstrip_candidates()
         added_count = len(self.timeline_widget.detection_preview_times)
 
         if added_count > 0:
@@ -1339,6 +1441,8 @@ class MainWindow(QMainWindow):
         duration = job.scenes[-1].end_time
         self.timeline_widget.set_scenes(scene_start_times, duration)
         self.timeline_widget.set_boundary_candidates(job.suggested_boundaries)
+        self.filmstrip_review_widget.set_job(job)
+        self._sync_filmstrip_candidates()
 
     def _on_export_requested(self, job: VideoJob, output_dir: Path, export_preset: str):
         """書き出しリクエスト"""
@@ -1489,6 +1593,41 @@ class MainWindow(QMainWindow):
                 color: #666;
                 border-color: #444;
                 font-weight: normal;
+            }
+            QFrame#workspaceViewBar {
+                background-color: #25282c;
+                border: 1px solid #3a3f45;
+                border-radius: 5px;
+            }
+            QPushButton#workspaceViewButton {
+                background-color: transparent;
+                border: 1px solid transparent;
+                padding: 5px 14px;
+            }
+            QPushButton#workspaceViewButton:hover {
+                background-color: #34383e;
+                border-color: #4b5159;
+            }
+            QPushButton#workspaceViewButton:checked {
+                background-color: #2d5275;
+                border-color: #4f8fc5;
+                color: #ffffff;
+                font-weight: bold;
+            }
+            QFrame#filmstripHeader,
+            QFrame#filmstripLegend {
+                background-color: #24272b;
+                border: 1px solid #3b4047;
+                border-radius: 5px;
+            }
+            QLabel#filmstripTitle {
+                color: #ffffff;
+                font-size: 15px;
+                font-weight: bold;
+            }
+            QLabel#filmstripSummary,
+            QLabel#filmstripHint {
+                color: #aeb4bc;
             }
             QTableWidget {
                 background-color: #252526;
