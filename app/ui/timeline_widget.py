@@ -385,6 +385,8 @@ class TimelineWidget(QWidget):
     seek_requested = Signal(float)  # シーク要求（秒）
     auto_detect_requested = Signal()
     auto_detect_cancel_requested = Signal()
+    blank_trim_requested = Signal()
+    blank_trim_cancel_requested = Signal()
     boundary_review_requested = Signal(float)
     boundary_candidates_applied = Signal(list)
     scene_detection_preview_applied = Signal(list)
@@ -397,6 +399,7 @@ class TimelineWidget(QWidget):
         self.boundary_candidates: List[float] = []
         self.detection_preview_times: List[float] = []
         self._detecting = False
+        self._blank_trimming = False
         self._detection_preview_cursor = 0
         self._detection_preview_settings: Optional[tuple[float, float]] = None
         self._detection_preview_result_text = ""
@@ -471,14 +474,22 @@ class TimelineWidget(QWidget):
             "細切れのクリップが大量にできる場合は値を大きくしてください（0で無効）"
         )
 
-        # シーン検出ボタン（検出中は中止操作へ切り替わる）
-        self.btn_auto_detect = QPushButton("シーン検出")
+        # 目的の異なる自動処理は、メニューに隠さず並べて選べるようにする。
+        self.btn_auto_detect = QPushButton("シーンを検出して分割")
         self.btn_auto_detect.setToolTip(
-            "映像の切り替わりを見つけ、タイムラインへ分割点を追加します"
+            "映像の切り替わりを検出します。候補を確認してから分割点へ反映できます"
         )
+        self.btn_auto_detect.setAccessibleName("シーンを検出して分割")
         self.btn_auto_detect.clicked.connect(self._on_auto_detect_clicked)
         self.btn_auto_detect.setEnabled(False)
-        header_layout.addWidget(self.btn_auto_detect)
+
+        self.btn_blank_trim = QPushButton("単色区間をトリミング")
+        self.btn_blank_trim.setToolTip(
+            "黒・白・青などの単色区間を検出し、確認後に書き出し対象から除外します"
+        )
+        self.btn_blank_trim.setAccessibleName("単色区間を検出してトリミング")
+        self.btn_blank_trim.clicked.connect(self._on_blank_trim_clicked)
+        self.btn_blank_trim.setEnabled(False)
 
         # 低頻度操作は1つのオーバーフローメニューへまとめる。
         self.btn_more = QPushButton("…")
@@ -521,6 +532,14 @@ class TimelineWidget(QWidget):
         header_layout.addWidget(self.btn_more)
         
         layout.addLayout(header_layout)
+
+        self.primary_actions_panel = QWidget()
+        primary_actions_layout = QHBoxLayout(self.primary_actions_panel)
+        primary_actions_layout.setContentsMargins(0, 0, 0, 0)
+        primary_actions_layout.setSpacing(6)
+        primary_actions_layout.addWidget(self.btn_auto_detect, stretch=1)
+        primary_actions_layout.addWidget(self.btn_blank_trim, stretch=1)
+        layout.addWidget(self.primary_actions_panel)
         
         # タイムラインバー
         self.timeline_bar = TimelineBar()
@@ -709,7 +728,7 @@ class TimelineWidget(QWidget):
 
     def _open_detection_panel(self, *_args):
         self.boundary_review_panel.hide()
-        self.btn_auto_detect.hide()
+        self.primary_actions_panel.hide()
         self.detection_panel.show()
         self._sync_detection_preview_controls()
 
@@ -718,7 +737,7 @@ class TimelineWidget(QWidget):
             return
         self.clear_detection_preview()
         self.detection_panel.hide()
-        self.btn_auto_detect.show()
+        self.primary_actions_panel.show()
         self._sync_recommended_action()
 
     def clear_detection_preview(self):
@@ -851,7 +870,7 @@ class TimelineWidget(QWidget):
         self.replace_boundaries(self.scene_start_times + candidates)
         self.clear_detection_preview()
         self.detection_panel.hide()
-        self.btn_auto_detect.show()
+        self.primary_actions_panel.show()
         self.scene_detection_preview_applied.emit(candidates)
     
     def set_scenes(self, scene_start_times: List[float], duration: float):
@@ -862,7 +881,7 @@ class TimelineWidget(QWidget):
         self.boundary_review_panel.hide()
         self.clear_detection_preview()
         self.detection_panel.hide()
-        self.btn_auto_detect.show()
+        self.primary_actions_panel.show()
 
         self.timeline_bar.set_duration(duration)
         self.timeline_bar.set_boundaries(scene_start_times)
@@ -870,6 +889,7 @@ class TimelineWidget(QWidget):
 
         self.btn_reset.setEnabled(True)
         self.btn_auto_detect.setEnabled(True)
+        self.btn_blank_trim.setEnabled(True)
         self.settings_action.setEnabled(True)
         self.btn_review_boundary.setEnabled(len(self.scene_start_times) > 1)
         self.btn_review_boundary.setVisible(len(self.scene_start_times) > 1)
@@ -880,6 +900,7 @@ class TimelineWidget(QWidget):
         """タイムラインを空にする"""
         self.duration = 0.0
         self.scene_start_times = []
+        self._blank_trimming = False
         self.timeline_bar.set_duration(0.0)
         self.timeline_bar.set_boundaries([])
         self.set_boundary_candidates([])
@@ -887,13 +908,16 @@ class TimelineWidget(QWidget):
         self.timeline_bar.set_playhead(0.0)
         self.btn_reset.setEnabled(False)
         self.btn_auto_detect.setEnabled(False)
+        self.btn_auto_detect.setText("シーンを検出して分割")
+        self.btn_blank_trim.setEnabled(False)
+        self.btn_blank_trim.setText("単色区間をトリミング")
         self.settings_action.setEnabled(False)
         self.btn_review_boundary.setEnabled(False)
         self.btn_review_boundary.hide()
         self.btn_filmstrip_review.setEnabled(False)
         self.boundary_review_panel.hide()
         self.detection_panel.hide()
-        self.btn_auto_detect.show()
+        self.primary_actions_panel.show()
         self._reviewed_boundary_time = None
         self._sync_recommended_action()
 
@@ -945,7 +969,9 @@ class TimelineWidget(QWidget):
 
     def set_auto_detect_enabled(self, enabled: bool):
         """自動検出ボタンの有効状態を設定"""
-        self.btn_auto_detect.setEnabled(enabled and self.duration > 0)
+        self.btn_auto_detect.setEnabled(
+            enabled and self.duration > 0 and not self._blank_trimming
+        )
         self._sync_recommended_action()
 
     def set_detecting(self, detecting: bool):
@@ -960,22 +986,29 @@ class TimelineWidget(QWidget):
             self.btn_auto_detect.setText("検出を中止")
             self.btn_auto_detect.setToolTip("実行中のシーン検出を中止します")
             self.btn_auto_detect.setEnabled(True)
+            self.btn_blank_trim.setEnabled(False)
         else:
-            self.btn_auto_detect.setText("シーン検出")
+            self.btn_auto_detect.setText("シーンを検出して分割")
             self.btn_auto_detect.setToolTip(
-                "映像の切り替わりを見つけ、タイムラインへ分割点を追加します"
+                "映像の切り替わりを検出します。候補を確認してから分割点へ反映できます"
             )
-            self.btn_auto_detect.setEnabled(self.duration > 0)
-        self.btn_reset.setEnabled(self.duration > 0 and not detecting)
+            self.btn_auto_detect.setEnabled(
+                self.duration > 0 and not self._blank_trimming
+            )
+            self.btn_blank_trim.setEnabled(
+                self.duration > 0 and not self._blank_trimming
+            )
+        busy = detecting or self._blank_trimming
+        self.btn_reset.setEnabled(self.duration > 0 and not busy)
         # 検出中は設定変更を受け付けない
-        self.threshold_spin.setEnabled(not detecting)
-        self.min_scene_spin.setEnabled(not detecting)
-        self.settings_action.setEnabled(self.duration > 0 and not detecting)
+        self.threshold_spin.setEnabled(not busy)
+        self.min_scene_spin.setEnabled(not busy)
+        self.settings_action.setEnabled(self.duration > 0 and not busy)
         self.btn_review_boundary.setEnabled(
-            len(self.scene_start_times) > 1 and not detecting
+            len(self.scene_start_times) > 1 and not busy
         )
         self.candidate_summary_button.setEnabled(
-            bool(self.boundary_candidates) and not detecting
+            bool(self.boundary_candidates) and not busy
         )
         self._sync_detection_preview_controls()
         self._sync_recommended_action()
@@ -986,6 +1019,7 @@ class TimelineWidget(QWidget):
             self.duration > 0
             and len(self.scene_start_times) <= 1
             and not self._detecting
+            and not self._blank_trimming
             and self.detection_panel.isHidden()
             and self.btn_auto_detect.isEnabled(),
         )
@@ -997,6 +1031,40 @@ class TimelineWidget(QWidget):
         else:
             self._open_detection_panel()
             self.auto_detect_requested.emit()
+
+    def _on_blank_trim_clicked(self):
+        if self._blank_trimming:
+            self.blank_trim_cancel_requested.emit()
+        else:
+            self.blank_trim_requested.emit()
+
+    def set_blank_trimming(self, trimming: bool):
+        """単色区間の検出・トリミング中の操作状態を切り替える。"""
+        self._blank_trimming = trimming
+        if trimming:
+            self.btn_blank_trim.setText("単色区間の検出を中止")
+            self.btn_blank_trim.setToolTip("単色区間の検出を中止します")
+            self.btn_blank_trim.setEnabled(True)
+        else:
+            self.btn_blank_trim.setText("単色区間をトリミング")
+            self.btn_blank_trim.setToolTip(
+                "黒・白・青などの単色区間を検出し、確認後に書き出し対象から除外します"
+            )
+            self.btn_blank_trim.setEnabled(self.duration > 0 and not self._detecting)
+
+        busy = trimming or self._detecting
+        self.btn_auto_detect.setEnabled(self.duration > 0 and not busy)
+        self.btn_reset.setEnabled(self.duration > 0 and not busy)
+        self.threshold_spin.setEnabled(not busy)
+        self.min_scene_spin.setEnabled(not busy)
+        self.settings_action.setEnabled(self.duration > 0 and not busy)
+        self.btn_review_boundary.setEnabled(
+            len(self.scene_start_times) > 1 and not busy
+        )
+        self.candidate_summary_button.setEnabled(
+            bool(self.boundary_candidates) and not busy
+        )
+        self._sync_recommended_action()
 
     def get_detection_settings(self) -> SceneDetectionSettings:
         """UIの値からシーン検出設定を構築"""

@@ -475,8 +475,6 @@ class ClipListWidget(QWidget):
     clip_preview_requested = Signal(float)  # start_time
     merge_requested = Signal(list)  # 結合対象のシーン番号リスト（昇順・連続）
     short_merge_requested = Signal()  # 短いシーンの結合提案を手動で出す
-    blank_detect_requested = Signal()
-    blank_detect_cancel_requested = Signal()
     date_detect_requested = Signal()
     date_detect_cancel_requested = Signal()
     media_signal_requested = Signal()
@@ -600,11 +598,6 @@ class ClipListWidget(QWidget):
         self._blank_detecting = False
         self.btn_postprocess = QPushButton("補正ツール")
         post_menu = QMenu(self.btn_postprocess)
-        self.btn_blank_detect = post_menu.addAction("つなぎ目を検出")
-        self.btn_blank_detect.setToolTip("単色（青/黒/白）のつなぎ目を検出して除外提案を出します")
-        self.btn_blank_detect.setEnabled(False)
-        self.btn_blank_detect.triggered.connect(self._on_blank_detect_clicked)
-
         self.btn_short_merge = post_menu.addAction("短いシーンの結合を提案")
         self.btn_short_merge.setToolTip(
             "短いシーンを自動で見つけ、まとめる候補を提案します"
@@ -798,7 +791,6 @@ class ClipListWidget(QWidget):
             has_job
             and (
                 not busy
-                or self._blank_detecting
                 or self._date_detecting
                 or self._signal_analyzing
             )
@@ -829,19 +821,15 @@ class ClipListWidget(QWidget):
         self.btn_short_merge.setEnabled(has_job and scene_count > 1 and not busy)
 
         if self._blank_detecting:
-            self.btn_blank_detect.setEnabled(True)
             self.btn_date_detect.setEnabled(False)
             self.btn_signal_analyze.setEnabled(False)
         elif self._date_detecting:
-            self.btn_blank_detect.setEnabled(False)
             self.btn_date_detect.setEnabled(True)
             self.btn_signal_analyze.setEnabled(False)
         elif self._signal_analyzing:
-            self.btn_blank_detect.setEnabled(False)
             self.btn_date_detect.setEnabled(False)
             self.btn_signal_analyze.setEnabled(True)
         else:
-            self.btn_blank_detect.setEnabled(has_job and not busy)
             self.btn_date_detect.setEnabled(has_job and not busy)
             self.btn_signal_analyze.setEnabled(has_job and not busy)
 
@@ -1154,23 +1142,9 @@ class ClipListWidget(QWidget):
         self.btn_merge_mode.setChecked(False)
         self._toggle_merge_mode(False)
 
-    def _on_blank_detect_clicked(self):
-        if self._blank_detecting:
-            self.blank_detect_cancel_requested.emit()
-        else:
-            self.blank_detect_requested.emit()
-
     def set_blank_detecting(self, detecting: bool):
-        """つなぎ目検出中の表示状態を切り替える（検出中はボタンが「中止」になる）"""
+        """単色区間の検出中は、クリップ編集と仕上げ操作を無効にする。"""
         self._blank_detecting = detecting
-        if detecting:
-            self.btn_blank_detect.setText("つなぎ目検出を中止")
-            self.btn_blank_detect.setToolTip("つなぎ目検出を中止します")
-        else:
-            self.btn_blank_detect.setText("つなぎ目を検出")
-            self.btn_blank_detect.setToolTip(
-                "単色（青/黒/白）のつなぎ目を検出して除外提案を出します"
-            )
         self._update_action_state()
 
     def _on_date_detect_clicked(self):

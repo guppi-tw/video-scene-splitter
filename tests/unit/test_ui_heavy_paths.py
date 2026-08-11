@@ -622,13 +622,50 @@ def test_timeline_reset_is_disabled_while_detecting():
     widget.set_scenes([0.0, 4.0], 10.0)
 
     assert widget.btn_reset.isEnabled() is True
-    assert widget.btn_auto_detect.text() == "シーン検出"
+    assert widget.btn_auto_detect.text() == "シーンを検出して分割"
     widget.set_detecting(True)
     assert widget.btn_auto_detect.text() == "検出を中止"
     assert widget.btn_reset.isEnabled() is False
+    assert widget.btn_blank_trim.isEnabled() is False
 
     widget.set_detecting(False)
-    assert widget.btn_auto_detect.text() == "シーン検出"
+    assert widget.btn_auto_detect.text() == "シーンを検出して分割"
+    assert widget.btn_reset.isEnabled() is True
+    assert widget.btn_blank_trim.isEnabled() is True
+    widget.close()
+
+
+def test_timeline_exposes_separate_scene_detection_and_solid_color_actions():
+    _app()
+    widget = TimelineWidget()
+    widget.set_scenes([0.0], 12.0)
+    trim_requests = []
+    trim_cancel_requests = []
+    widget.blank_trim_requested.connect(lambda: trim_requests.append(True))
+    widget.blank_trim_cancel_requested.connect(
+        lambda: trim_cancel_requests.append(True)
+    )
+
+    assert widget.btn_auto_detect.text() == "シーンを検出して分割"
+    assert widget.btn_blank_trim.text() == "単色区間をトリミング"
+    assert widget.btn_auto_detect.isEnabled() is True
+    assert widget.btn_blank_trim.isEnabled() is True
+
+    widget.btn_blank_trim.click()
+    assert trim_requests == [True]
+
+    widget.set_blank_trimming(True)
+    assert widget.btn_blank_trim.text() == "単色区間の検出を中止"
+    assert widget.btn_blank_trim.isEnabled() is True
+    assert widget.btn_auto_detect.isEnabled() is False
+    assert widget.btn_reset.isEnabled() is False
+
+    widget.btn_blank_trim.click()
+    assert trim_cancel_requests == [True]
+
+    widget.set_blank_trimming(False)
+    assert widget.btn_blank_trim.text() == "単色区間をトリミング"
+    assert widget.btn_auto_detect.isEnabled() is True
     assert widget.btn_reset.isEnabled() is True
     widget.close()
 
@@ -665,7 +702,7 @@ def test_scene_detection_preview_supports_tuning_navigation_and_apply():
 
     widget.btn_auto_detect.click()
     assert widget.detection_panel.isHidden() is False
-    assert widget.btn_auto_detect.isHidden() is True
+    assert widget.primary_actions_panel.isHidden() is True
     assert detect_requests == [True]
 
     widget.set_detection_preview([0.0, 4.0, 8.0, 12.0])
@@ -740,6 +777,8 @@ def test_proposal_dialogs_keep_secondary_explanations_collapsed():
 
     assert merge.btn_skip.text() == "結合しない"
     assert not hasattr(merge, "intro_label")
+    assert blank.windowTitle() == "単色区間をトリミング"
+    assert blank.btn_cut.text() == "トリミングする"
     assert blank.detail_label.isHidden() is True
     assert blank.btn_toggle_detail.text() == "2区間を確認"
 
@@ -1132,15 +1171,13 @@ def test_clip_actions_disable_irrelevant_controls_while_busy(tmp_path):
     widget = ClipListWidget()
     widget.set_job(job)
 
-    assert widget.btn_blank_detect.isEnabled() is True
     assert widget.btn_date_detect.isEnabled() is True
     assert widget.btn_signal_analyze.isEnabled() is True
     assert widget.btn_short_merge.isEnabled() is True
     assert widget.btn_export.isEnabled() is True
 
     widget.set_blank_detecting(True)
-    assert widget.btn_blank_detect.text() == "つなぎ目検出を中止"
-    assert widget.btn_blank_detect.isEnabled() is True
+    assert widget.btn_postprocess.isEnabled() is False
     assert widget.btn_date_detect.isEnabled() is False
     assert widget.btn_short_merge.isEnabled() is False
     assert widget.btn_export.isEnabled() is False
@@ -1151,27 +1188,23 @@ def test_clip_actions_disable_irrelevant_controls_while_busy(tmp_path):
     widget.set_media_signal_analyzing(True)
     assert widget.btn_signal_analyze.text() == "音声・フェード解析を中止"
     assert widget.btn_signal_analyze.isEnabled() is True
-    assert widget.btn_blank_detect.isEnabled() is False
     assert widget.btn_date_detect.isEnabled() is False
     widget.set_media_signal_analyzing(False)
 
     widget.set_date_detecting(True)
     assert widget.btn_date_detect.text() == "日付検出を中止"
     assert widget.btn_date_detect.isEnabled() is True
-    assert widget.btn_blank_detect.isEnabled() is False
     assert widget.btn_short_merge.isEnabled() is False
     assert widget.btn_export.isEnabled() is False
 
     widget.set_date_detecting(False)
     widget.set_exporting(True)
-    assert widget.btn_blank_detect.isEnabled() is False
     assert widget.btn_date_detect.isEnabled() is False
     assert widget.btn_short_merge.isEnabled() is False
     assert widget.btn_export.isEnabled() is True
     assert widget.btn_export.text() == "書き出しを中止"
 
     widget.set_exporting(False)
-    assert widget.btn_blank_detect.isEnabled() is True
     assert widget.btn_date_detect.isEnabled() is True
     assert widget.btn_short_merge.isEnabled() is True
     assert widget.btn_export.isEnabled() is True

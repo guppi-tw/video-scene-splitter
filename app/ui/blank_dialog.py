@@ -1,8 +1,8 @@
 """
-単色つなぎ目シーンの除外提案ダイアログ
+単色区間のトリミング確認ダイアログ
 
 昔のテープの映像間に入る青一色・黒一色のつなぎ目を検出した結果を提示し、
-まとめて除外（Keepオフ）するか確認する。
+まとめて書き出し対象から除外（Keepオフ）するか確認する。
 """
 from typing import List, Tuple
 
@@ -14,14 +14,14 @@ from app.core.time_format import format_seconds
 
 
 class BlankCutDialog(QDialog):
-    """単色つなぎ目区間の除外を提案するダイアログ"""
+    """単色区間のトリミングを確認するダイアログ"""
 
     def __init__(self, segments: List[Tuple[float, float, str]], parent=None):
         """segments: (開始秒, 終了秒, ラベル) のリスト"""
         super().__init__(parent)
         self._segments = segments
 
-        self.setWindowTitle("つなぎ目の除外")
+        self.setWindowTitle("単色区間をトリミング")
         self.setModal(True)
         self.setMinimumWidth(380)
 
@@ -35,7 +35,7 @@ class BlankCutDialog(QDialog):
         intro = QLabel(
             f"映像のつなぎ目とみられる{kinds}一色の区間を "
             f"{len(segments)} 個（合計 {format_seconds(total_seconds)}）"
-            "検出しました。\n書き出し対象から除外しますか？"
+            "検出しました。\n書き出しから取り除きますか？"
         )
         intro.setWordWrap(True)
         layout.addWidget(intro)
@@ -64,7 +64,7 @@ class BlankCutDialog(QDialog):
         self.btn_skip.clicked.connect(self.reject)
         button_layout.addWidget(self.btn_skip)
 
-        self.btn_cut = QPushButton("除外する")
+        self.btn_cut = QPushButton("トリミングする")
         self.btn_cut.setObjectName("btn_export")
         self.btn_cut.setDefault(True)
         self.btn_cut.clicked.connect(self.accept)

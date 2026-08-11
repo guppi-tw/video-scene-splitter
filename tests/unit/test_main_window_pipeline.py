@@ -23,6 +23,11 @@ class _ClipListStub:
         pass
 
 
+class _TimelineStub:
+    def set_blank_trimming(self, _trimming):
+        pass
+
+
 def _blank_finished_window(*, segments: list):
     worker = object()
     calls = []
@@ -32,6 +37,7 @@ def _blank_finished_window(*, segments: list):
         blank_detection_thread=None,
         log_widget=_LogStub(),
         clip_list_widget=_ClipListStub(),
+        timeline_widget=_TimelineStub(),
         current_job=SimpleNamespace(filename="video.mp4"),
         _pending_blank_segments=segments,
         sender=lambda: worker,
@@ -41,7 +47,7 @@ def _blank_finished_window(*, segments: list):
 
 
 def test_manual_blank_finished_only_shows_blank_dialog():
-    """つなぎ目検出は、選んだ補正以外のモーダルへ連鎖しない"""
+    """単色区間検出は、選んだ処理以外のモーダルへ連鎖しない。"""
     segments = [(3.0, 4.0, "青")]
     window, calls = _blank_finished_window(segments=segments)
 

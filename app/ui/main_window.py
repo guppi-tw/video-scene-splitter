@@ -224,6 +224,8 @@ class MainWindow(QMainWindow):
         self.timeline_widget.boundaries_changed.connect(self._on_boundaries_changed)
         self.timeline_widget.auto_detect_requested.connect(self._on_auto_detect_requested)
         self.timeline_widget.auto_detect_cancel_requested.connect(self._on_auto_detect_cancel)
+        self.timeline_widget.blank_trim_requested.connect(self._on_blank_detect_requested)
+        self.timeline_widget.blank_trim_cancel_requested.connect(self._on_blank_detect_cancel)
         self.timeline_widget.boundary_review_requested.connect(
             self._on_boundary_review_requested
         )
@@ -246,10 +248,6 @@ class MainWindow(QMainWindow):
         # クリップリスト → シーン結合
         self.clip_list_widget.merge_requested.connect(self._on_merge_scenes_requested)
         self.clip_list_widget.short_merge_requested.connect(self._on_short_merge_requested)
-
-        # クリップリスト → つなぎ目検出
-        self.clip_list_widget.blank_detect_requested.connect(self._on_blank_detect_requested)
-        self.clip_list_widget.blank_detect_cancel_requested.connect(self._on_blank_detect_cancel)
 
         # クリップリスト → 日付検出
         self.clip_list_widget.date_detect_requested.connect(self._on_date_detect_requested)
@@ -446,6 +444,7 @@ class MainWindow(QMainWindow):
                 self.blank_detection_thread = None
                 self.blank_detection_worker = None
                 self.clip_list_widget.set_blank_detecting(False)
+                self.timeline_widget.set_blank_trimming(False)
 
         self.job_queue.remove_job(job_id)
         self.queue_widget.refresh()
@@ -670,7 +669,8 @@ class MainWindow(QMainWindow):
         if job.needs_post_process:
             job.needs_post_process = False
             self.log_widget.append_log(
-                "必要に応じて「補正ツール」からつなぎ目除外や結合を確認できます"
+                "単色区間はタイムラインの「単色区間をトリミング」、"
+                "結合などは「補正ツール」から確認できます"
             )
             if not self._start_date_detection(auto=True):
                 self._finish_deferred_thumbnails()
@@ -973,6 +973,10 @@ class MainWindow(QMainWindow):
         if not self.current_job or not self.current_job.scenes:
             return
 
+        if self.blank_detection_thread and self.blank_detection_thread.isRunning():
+            QMessageBox.warning(self, "警告", "単色区間を検出中です")
+            return
+
         if self.scene_detection_thread and self.scene_detection_thread.isRunning():
             QMessageBox.warning(self, "警告", "シーン検出中です")
             return
@@ -1040,33 +1044,39 @@ class MainWindow(QMainWindow):
             f"シーン検出: 確認した分割候補 {len(candidates)}個を反映しました"
         )
         self.log_widget.append_log(
-            "必要に応じて「補正ツール」からつなぎ目除外や結合を確認できます"
+            "単色区間は「単色区間をトリミング」、"
+            "結合などは「補正ツール」から確認できます"
         )
         self._start_date_detection(auto=True)
 
     def _on_blank_detect_requested(self):
-        """クリップ一覧から手動でつなぎ目検出を開始"""
+        """タイムラインから単色区間の検出とトリミングを開始する。"""
         self._start_blank_detection()
 
     def _on_blank_detect_cancel(self):
-        """つなぎ目検出の中止リクエスト"""
+        """単色区間検出の中止リクエスト。"""
         if self.blank_detection_worker:
             self.blank_detection_worker.cancel()
-            self.log_widget.append_log("つなぎ目検出を中止しています...")
+            self.log_widget.append_log("単色区間の検出を中止しています...")
 
     def _start_blank_detection(self):
-        """補正ツールから単色つなぎ目シーンの検出を開始する。"""
+        """単色区間を検出し、確認後に書き出し対象から除外する。"""
         if not self.current_job or not self.current_job.scenes:
             return False
 
+        if self.scene_detection_thread and self.scene_detection_thread.isRunning():
+            QMessageBox.warning(self, "警告", "シーン検出中です")
+            return False
+
         if self.blank_detection_thread and self.blank_detection_thread.isRunning():
-            QMessageBox.warning(self, "警告", "つなぎ目検出を実行中です")
+            QMessageBox.warning(self, "警告", "単色区間を検出中です")
             return False
 
         self._pending_blank_segments = None
-        self.log_widget.append_log("つなぎ目（単色）を検出中...")
-        self.log_widget.set_status("つなぎ目検出中")
+        self.log_widget.append_log("トリミング対象の単色区間を検出中...")
+        self.log_widget.set_status("単色区間を検出中")
         self.clip_list_widget.set_blank_detecting(True)
+        self.timeline_widget.set_blank_trimming(True)
 
         self.blank_detection_thread = QThread()
         self.blank_detection_worker = BlankDetectionWorker(self.current_job)
@@ -1084,17 +1094,23 @@ class MainWindow(QMainWindow):
 
     def _on_blank_detect_percent(self, percent: int):
         self.log_widget.set_progress_bar(percent, 100)
-        self.log_widget.set_detail(f"つなぎ目検出中: {percent}%")
+        self.log_widget.set_detail(f"単色区間を検出中: {percent}%")
 
     def _on_blank_detect_complete(self, segments: list):
-        """つなぎ目検出の結果を受け取る（保持のみ）。
+        """単色区間の検出結果を受け取る（保持のみ）。
 
         ワーカースレッドを片付けてから確認画面を出せるよう、ここでは保持する。
         """
         self._pending_blank_segments = segments
+        if segments:
+            self.log_widget.append_log(
+                f"単色区間を {len(segments)} 件検出しました。確認画面を開きます"
+            )
+        else:
+            self.log_widget.append_log("トリミング対象の単色区間は見つかりませんでした")
 
     def _apply_blank_segments(self, segments: list):
-        """つなぎ目除外ダイアログを出し、承認なら単色区間を切り出して除外する"""
+        """確認後、単色区間を切り出して書き出し対象から除外する。"""
         if not self.current_job or not self.current_job.scenes or not segments:
             return
 
@@ -1134,7 +1150,7 @@ class MainWindow(QMainWindow):
 
         self.clip_list_widget.refresh_clips()
         self.log_widget.append_log(
-            f"単色のつなぎ目 {dropped} 区間を書き出し対象から除外しました"
+            f"単色区間 {dropped} 件をトリミング対象にしました"
         )
         self._on_job_edited()
 
@@ -1142,7 +1158,7 @@ class MainWindow(QMainWindow):
         self.log_widget.append_log(f"[ERROR] {message}")
 
     def _on_blank_detect_finished(self):
-        """スレッドを片付けてから、選ばれたつなぎ目補正だけを確認する。"""
+        """スレッドを片付けてから、単色区間のトリミングを確認する。"""
         if self.sender() is not self.blank_detection_worker:
             return
         self.log_widget.hide_progress()
@@ -1152,6 +1168,7 @@ class MainWindow(QMainWindow):
             self.blank_detection_thread = None
             self.blank_detection_worker = None
         self.clip_list_widget.set_blank_detecting(False)
+        self.timeline_widget.set_blank_trimming(False)
         if self.current_job:
             self.log_widget.set_status(f"編集中: {self.current_job.filename}")
 
