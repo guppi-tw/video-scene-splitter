@@ -4,7 +4,7 @@ Regression tests for UI paths that can accidentally fan out heavy work.
 from datetime import date
 from pathlib import Path
 
-from PySide6.QtWidgets import QApplication, QFileDialog, QMessageBox
+from PySide6.QtWidgets import QApplication, QFileDialog, QMessageBox, QPushButton
 from PySide6.QtCore import QDate, Qt
 from PySide6.QtTest import QTest
 
@@ -434,6 +434,43 @@ def test_detected_date_can_be_checked_and_corrected_inline(tmp_path):
     assert job.scenes[0].event_date == date(1998, 8, 13)
     assert job.scenes[0].date_source == "manual"
     assert widget.review_summary_label.text() == "確認事項なし"
+    widget.close()
+
+
+def test_clip_row_never_shows_review_buttons_before_they_have_a_parent(
+    monkeypatch, tmp_path
+):
+    """行の再構築中に行内ボタンが独立ウィンドウ化しない。"""
+    _app()
+    source = tmp_path / "review-button-parent.mp4"
+    source.touch()
+    parentless_shows = []
+    original_set_visible = QPushButton.setVisible
+
+    def track_parentless_show(button, visible):
+        if visible and button.parent() is None:
+            parentless_shows.append(button.text())
+        return original_set_visible(button, visible)
+
+    monkeypatch.setattr(QPushButton, "setVisible", track_parentless_show)
+    job = VideoJob(
+        id=1,
+        source_path=source,
+        status=JobStatus.REVIEW,
+        scenes=[
+            Scene(
+                index=1,
+                start_time=0.0,
+                end_time=2.0,
+                event_date=date(1998, 8, 12),
+                date_source="detected",
+            )
+        ],
+    )
+    widget = ClipListWidget()
+    widget.set_job(job)
+
+    assert parentless_shows == []
     widget.close()
 
 

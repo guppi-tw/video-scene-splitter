@@ -273,7 +273,6 @@ class ClipRow(QFrame):
         self.btn_edit_review_date.setAccessibleName(
             f"シーン {self.scene.index} の日付を修正"
         )
-        self.btn_edit_review_date.setVisible(self._has_date_issue)
         self.btn_edit_review_date.clicked.connect(self._show_date_editor)
         info_layout.addLayout(review_line)
 
@@ -333,12 +332,13 @@ class ClipRow(QFrame):
         self.btn_review_done.setAccessibleName(
             f"シーン {self.scene.index} の確認事項を確認済みにする"
         )
-        self.btn_review_done.setVisible(bool(self._pending_issues))
         self.btn_review_done.clicked.connect(
             lambda: self.review_acknowledged.emit(self.scene.index)
         )
         check_layout.addWidget(self.btn_review_done)
         check_layout.addWidget(self.btn_edit_review_date)
+        self.btn_review_done.setVisible(bool(self._pending_issues))
+        self.btn_edit_review_date.setVisible(self._has_date_issue)
 
         layout.addWidget(self.settings_widget)
 
