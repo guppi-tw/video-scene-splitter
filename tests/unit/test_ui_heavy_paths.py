@@ -283,6 +283,88 @@ def test_clip_editor_keeps_hour_long_time_range_visible_at_minimum_width(tmp_pat
     widget.close()
 
 
+def test_clip_editor_always_shows_date_and_detection_source_at_minimum_width(
+    tmp_path,
+):
+    _app()
+    source = tmp_path / "dated-clips.mp4"
+    source.touch()
+    job = VideoJob(
+        id=1,
+        source_path=source,
+        status=JobStatus.REVIEW,
+        scenes=[
+            Scene(
+                index=1,
+                start_time=0.0,
+                end_time=10.0,
+                event_date=date(1998, 8, 12),
+                date_source="detected",
+            ),
+            Scene(
+                index=2,
+                start_time=10.0,
+                end_time=20.0,
+                event_date=date(1998, 8, 13),
+                date_source="inferred",
+            ),
+            Scene(
+                index=3,
+                start_time=20.0,
+                end_time=30.0,
+                event_date=date(1998, 8, 14),
+                date_source="manual",
+            ),
+        ],
+    )
+    widget = ClipListWidget()
+    widget.set_job(job)
+    widget.resize(340, 600)
+    widget.show()
+    QApplication.processEvents()
+
+    assert [row.date_status_label.text() for row in widget._clip_rows] == [
+        "日付 1998/08/12  検出",
+        "日付 1998/08/13  推定",
+        "日付 1998/08/14  手動",
+    ]
+    assert all(not row.date_status_label.isHidden() for row in widget._clip_rows)
+    assert all(
+        row.date_status_label.width() >= row.date_status_label.sizeHint().width()
+        for row in widget._clip_rows
+    )
+    widget.close()
+
+
+def test_split_clip_rows_keep_the_detected_date_visible(tmp_path):
+    _app()
+    source = tmp_path / "split-dated-clip.mp4"
+    source.touch()
+    job = VideoJob(
+        id=1,
+        source_path=source,
+        status=JobStatus.REVIEW,
+        scenes=[
+            Scene(
+                index=1,
+                start_time=0.0,
+                end_time=20.0,
+                event_date=date(1998, 8, 12),
+                date_source="detected",
+            )
+        ],
+    )
+    job.rebuild_scenes_from_boundaries([0.0, 10.0], 20.0)
+    widget = ClipListWidget()
+    widget.set_job(job)
+
+    assert [row.date_status_label.text() for row in widget._clip_rows] == [
+        "日付 1998/08/12  検出",
+        "日付 1998/08/12  検出",
+    ]
+    widget.close()
+
+
 def test_blank_candidates_are_modeless_preview_rows_in_clip_list(tmp_path):
     _app()
     source = tmp_path / "blank-review.mp4"
@@ -1039,6 +1121,10 @@ def test_date_detection_results_open_inline_review_without_completion_modal(
     assert "検出日付: 1998/08/12" in (
         window.clip_list_widget._clip_rows[0].review_label.text()
     )
+    assert (
+        window.clip_list_widget._clip_rows[0].date_status_label.text()
+        == "日付 1998/08/12  検出"
+    )
     assert "確認事項" in window.log_widget.log_text.toPlainText()
     window.close()
 
@@ -1185,6 +1271,7 @@ def test_default_metadata_date_is_always_enabled(tmp_path):
     widget._on_default_metadata_changed()
 
     assert job.default_event_date == date(2025, 4, 5)
+    assert widget._clip_rows[0].date_status_label.text() == "日付 2025/04/05  設定"
     widget.close()
 
 
@@ -1205,6 +1292,7 @@ def test_default_metadata_date_shows_unset_when_model_has_no_date(tmp_path):
     assert widget.date_edit.text() == "未設定"
     assert widget.date_edit.optional_date() is None
     assert job.default_event_date is None
+    assert widget._clip_rows[0].date_status_label.text() == "日付 未設定"
 
     widget.date_edit.setDate(QDate(2025, 4, 5))
     widget.btn_clear_date.click()

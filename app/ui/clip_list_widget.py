@@ -208,6 +208,39 @@ class ClipRow(QFrame):
         self.time_label.setSizePolicy(QSizePolicy.Minimum, QSizePolicy.Preferred)
         info_layout.addWidget(self.time_label)
 
+        effective_date, date_source = self._effective_date_info()
+        if effective_date is None:
+            date_text = "日付 未設定"
+            date_color = "#c8c8c8"
+            date_tooltip = "このクリップには日付が設定されていません"
+        else:
+            source_label = {
+                "detected": "検出",
+                "inferred": "推定",
+                "manual": "手動",
+                "default": "設定",
+            }.get(date_source, "設定")
+            date_text = f"日付 {effective_date:%Y/%m/%d}  {source_label}"
+            date_color = {
+                "detected": "#9fd3ff",
+                "inferred": "#ffd27a",
+                "manual": "#b9dfb9",
+            }.get(date_source, "#d0d0d0")
+            date_tooltip = {
+                "detected": "映像の焼き込み日付から自動検出した値です",
+                "inferred": "年月情報または前後のクリップから推定した値です",
+                "manual": "手動で設定・修正した値です",
+            }.get(date_source, "動画に設定された日付です")
+        self.date_status_label = QLabel(date_text)
+        self.date_status_label.setStyleSheet(
+            f"font-size: 11px; color: {date_color};"
+        )
+        self.date_status_label.setSizePolicy(
+            QSizePolicy.Minimum, QSizePolicy.Preferred
+        )
+        self.date_status_label.setToolTip(date_tooltip)
+        info_layout.addWidget(self.date_status_label)
+
         # 生成名は通常テキスト表示。ダブルクリック時だけ入力欄へ切り替える。
         self.filename_container = QWidget()
         self.filename_stack = QStackedLayout(self.filename_container)
@@ -348,6 +381,18 @@ class ClipRow(QFrame):
             self.thumb_label.setPixmap(
                 pixmap.scaled(88, 50, Qt.KeepAspectRatio, Qt.SmoothTransformation)
             )
+
+    def _effective_date_info(self) -> tuple[Optional[date], Optional[str]]:
+        """この行へ継承される日付と、その判定元を返す。"""
+        effective_date = self.job.default_event_date
+        source = "default" if effective_date is not None else None
+        for scene in self.job.scenes:
+            if scene.index > self.scene.index:
+                break
+            if scene.event_date is not None:
+                effective_date = scene.event_date
+                source = scene.date_source or "default"
+        return effective_date, source
 
     def eventFilter(self, watched, event):
         activates_label = (
