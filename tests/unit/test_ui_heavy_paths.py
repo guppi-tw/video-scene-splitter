@@ -11,13 +11,12 @@ from PySide6.QtTest import QTest
 from app.core.jobs import JobQueue, JobStatus, Scene, VideoJob
 from app.core.session_store import SessionStore
 from app.core.media_signal_detector import build_media_signal_result
-from app.ui.clip_list_widget import ClipListWidget
+from app.ui.clip_list_widget import BlankCandidateRow, ClipListWidget
 from app.ui.main_window import MainWindow
 from app.ui.preview_widget import PreviewWidget
 from app.ui.timeline_widget import TimelineWidget
 from app.ui.workers import ExportWorker
 from app.ui.merge_dialog import MergeProposalDialog
-from app.ui.blank_dialog import BlankCutDialog
 
 
 def _app():
@@ -281,6 +280,57 @@ def test_clip_editor_keeps_hour_long_time_range_visible_at_minimum_width(tmp_pat
 
     assert time_label.text() == "#62  1:01:42–1:02:17"
     assert time_label.width() >= time_label.sizeHint().width()
+    widget.close()
+
+
+def test_blank_candidates_are_modeless_preview_rows_in_clip_list(tmp_path):
+    _app()
+    source = tmp_path / "blank-review.mp4"
+    source.touch()
+    job = VideoJob(
+        id=1,
+        source_path=source,
+        status=JobStatus.REVIEW,
+        scenes=[
+            Scene(index=1, start_time=0.0, end_time=10.0),
+            Scene(index=2, start_time=10.0, end_time=20.0),
+        ],
+    )
+    widget = ClipListWidget()
+    widget.set_job(job)
+    segments = [(3.0, 4.0, "黒"), (12.0, 16.0, "青")]
+    previewed = []
+    confirmed = []
+    widget.blank_preview_requested.connect(
+        lambda start, end: previewed.append((start, end))
+    )
+    widget.blank_trim_confirmed.connect(confirmed.append)
+
+    widget.show_blank_candidates(segments)
+    widget.resize(340, 600)
+    widget.show()
+    QApplication.processEvents()
+
+    assert widget.blank_review_bar.isHidden() is False
+    assert widget.blank_review_summary.text() == "単色候補 2区間（合計 0:05）"
+    assert len(widget._blank_candidate_rows) == 2
+    first = widget._blank_candidate_rows[0]
+    assert isinstance(first, BlankCandidateRow)
+    assert first.objectName() == "blankCandidateRow"
+    assert first.description_label.text() == "単色候補（黒）  0:03–0:04"
+    assert first.description_label.width() >= first.description_label.sizeHint().width()
+    assert widget.btn_export.isEnabled() is False
+    assert widget.btn_trim_blank_candidates.text() == "選択2件をトリミング"
+
+    first.btn_preview.click()
+    assert previewed == [(3.0, 4.0)]
+
+    widget._blank_candidate_rows[1].trim_check.setChecked(False)
+    assert widget.btn_trim_blank_candidates.text() == "選択1件をトリミング"
+    widget.btn_trim_blank_candidates.click()
+    assert confirmed == [[segments[0]]]
+    assert widget.blank_review_bar.isHidden() is True
+    assert widget._blank_candidate_rows == []
     widget.close()
 
 
@@ -792,28 +842,13 @@ def test_empty_state_uses_central_drop_zone_and_hides_editor_panes(tmp_path):
     window.close()
 
 
-def test_proposal_dialogs_keep_secondary_explanations_collapsed():
+def test_merge_proposal_keeps_secondary_explanations_collapsed():
     _app()
     merge = MergeProposalDialog([0.0, 1.0, 8.0], 10.0)
-    blank = BlankCutDialog([(1.0, 2.0, "黒"), (4.0, 5.0, "青")])
 
     assert merge.btn_skip.text() == "結合しない"
     assert not hasattr(merge, "intro_label")
-    assert blank.windowTitle() == "単色区間をトリミング"
-    assert blank.btn_cut.text() == "トリミングする"
-    assert blank.detail_label.isHidden() is True
-    assert blank.btn_toggle_detail.text() == "2区間を確認"
-
-    blank.show()
-    QApplication.processEvents()
-    collapsed_height = blank.height()
-    blank.btn_toggle_detail.click()
-    QApplication.processEvents()
-    assert blank.detail_label.isHidden() is False
-    assert blank.height() > collapsed_height
-    assert blank.height() >= blank.sizeHint().height()
     merge.close()
-    blank.close()
 
 
 def test_editor_layout_remains_usable_at_compact_desktop_size(tmp_path):
@@ -1348,6 +1383,27 @@ def test_arrow_shortcut_does_not_override_focused_slider():
 
     assert slider.value() == 71
     window.close()
+
+
+def test_preview_widget_plays_only_the_requested_candidate_range():
+    _app()
+    preview = PreviewWidget()
+    calls = []
+    preview.seek_to = lambda seconds: calls.append(("seek", seconds))
+    preview.play = lambda: calls.append(("play",))
+    preview.pause = lambda: calls.append(("pause",))
+
+    preview.play_range(3.0, 4.0)
+
+    assert calls == [("seek", 3.0), ("play",)]
+    assert preview._preview_end_ms == 4000
+
+    preview._on_position_changed(3999)
+    assert calls == [("seek", 3.0), ("play",)]
+    preview._on_position_changed(4000)
+    assert calls[-1] == ("pause",)
+    assert preview._preview_end_ms is None
+    preview.close()
 
 
 def test_media_controls_and_timeline_have_accessible_names():

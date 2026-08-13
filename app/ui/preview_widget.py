@@ -27,6 +27,7 @@ class PreviewWidget(QWidget):
         super().__init__()
         self.current_video_path: Optional[Path] = None
         self._duration_ms = 0
+        self._preview_end_ms: Optional[int] = None
         self._setup_ui()
         self._setup_player()
     
@@ -205,8 +206,17 @@ class PreviewWidget(QWidget):
 
     def play_from(self, position_sec: float):
         """指定位置から再生（一時停止中でも再生を開始する）"""
+        self._preview_end_ms = None
         self.seek_to(position_sec)
         self.player.play()
+
+    def play_range(self, start_sec: float, end_sec: float):
+        """指定区間だけを再生し、終端で自動的に一時停止する。"""
+        start_sec = max(0.0, start_sec)
+        end_sec = max(start_sec, end_sec)
+        self._preview_end_ms = int(end_sec * 1000)
+        self.seek_to(start_sec)
+        self.play()
 
     def step_back(self):
         """コマ戻し（公開API）"""
@@ -226,6 +236,7 @@ class PreviewWidget(QWidget):
     
     def stop(self):
         """停止"""
+        self._preview_end_ms = None
         self.player.stop()
     
     def seek_to(self, position_sec: float):
@@ -303,6 +314,9 @@ class PreviewWidget(QWidget):
         """再生位置変更"""
         self._update_time_label(position_ms)
         self.position_changed.emit(position_ms / 1000.0)
+        if self._preview_end_ms is not None and position_ms >= self._preview_end_ms:
+            self._preview_end_ms = None
+            self.pause()
 
     def _on_duration_changed(self, duration_ms: int):
         """動画長さ変更"""
@@ -326,6 +340,7 @@ class PreviewWidget(QWidget):
 
     def cleanup(self):
         """クリーンアップ（停止してコントロールを無効化）"""
+        self._preview_end_ms = None
         self.player.stop()
         self.player.setSource(QUrl())
         self.current_video_path = None

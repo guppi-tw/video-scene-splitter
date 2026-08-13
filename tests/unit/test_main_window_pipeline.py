@@ -19,8 +19,14 @@ class _LogStub:
 
 
 class _ClipListStub:
+    def __init__(self):
+        self.blank_candidates = []
+
     def set_blank_detecting(self, _detecting):
         pass
+
+    def show_blank_candidates(self, segments):
+        self.blank_candidates = list(segments)
 
 
 class _TimelineStub:
@@ -42,19 +48,40 @@ def _blank_finished_window(*, segments: list):
         _pending_blank_segments=segments,
         sender=lambda: worker,
     )
-    window._apply_blank_segments = lambda found: calls.append(("blank", found))
     return window, calls
 
 
-def test_manual_blank_finished_only_shows_blank_dialog():
-    """単色区間検出は、選んだ処理以外のモーダルへ連鎖しない。"""
+def test_manual_blank_finished_shows_modeless_candidates_in_clip_list():
+    """単色区間検出は、右の一覧へ一時候補を表示する。"""
     segments = [(3.0, 4.0, "青")]
     window, calls = _blank_finished_window(segments=segments)
 
     MainWindow._on_blank_detect_finished(window)
 
-    assert calls == [("blank", segments)]
+    assert calls == []
+    assert window.clip_list_widget.blank_candidates == segments
     assert window._pending_blank_segments is None
+
+
+def test_blank_candidate_preview_and_confirmation_use_inline_review_flow():
+    calls = []
+    window = SimpleNamespace(
+        preview_widget=SimpleNamespace(
+            play_range=lambda start, end: calls.append(("play", start, end)),
+            pause=lambda: calls.append(("pause",)),
+        ),
+        _apply_blank_segments=lambda segments: calls.append(("apply", segments)),
+    )
+    segments = [(3.0, 4.0, "青")]
+
+    MainWindow._on_blank_preview_requested(window, 3.0, 4.0)
+    MainWindow._on_blank_trim_confirmed(window, segments)
+
+    assert calls == [
+        ("play", 3.0, 4.0),
+        ("pause",),
+        ("apply", segments),
+    ]
 
 
 def test_queue_clip_preview_does_not_start_post_process_pipeline(tmp_path):

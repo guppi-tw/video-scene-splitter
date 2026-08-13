@@ -8,7 +8,8 @@ from typing import Optional
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit,
     QPushButton, QCheckBox, QScrollArea, QFrame, QDateEdit,
-    QFileDialog, QMessageBox, QSizePolicy, QMenu, QStackedLayout, QComboBox
+    QFileDialog, QMessageBox, QSizePolicy, QMenu, QStackedLayout, QComboBox,
+    QStyle,
 )
 from PySide6.QtCore import Qt, Signal, QDate, QEvent
 from PySide6.QtGui import QMouseEvent, QPixmap
@@ -67,6 +68,62 @@ class OptionalDateEdit(QDateEdit):
         if self.date() == self.UNSET_DATE:
             self.setDate(QDate.currentDate())
         super().mousePressEvent(event)
+
+
+class BlankCandidateRow(QFrame):
+    """確定前の単色区間を一覧内でプレビューする行。"""
+
+    preview_requested = Signal(float, float)
+
+    def __init__(self, start_time: float, end_time: float, label: str):
+        super().__init__()
+        self.start_time = start_time
+        self.end_time = end_time
+        self.label = label
+        self.setObjectName("blankCandidateRow")
+        self.setFixedHeight(68)
+        self.setStyleSheet(
+            "QFrame#blankCandidateRow { background-color: #4a2626; "
+            "border: 1px solid #925050; border-radius: 3px; }"
+        )
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(10, 5, 8, 5)
+        layout.setSpacing(3)
+
+        text = QLabel(
+            f"単色候補（{label}）  "
+            f"{format_seconds(start_time)}–{format_seconds(end_time)}"
+        )
+        text.setStyleSheet("font-weight: bold; color: #ffd2d2;")
+        text.setToolTip("検出結果は未確定です。再生して内容を確認できます")
+        layout.addWidget(text)
+        self.description_label = text
+
+        action_layout = QHBoxLayout()
+        action_layout.setContentsMargins(0, 0, 0, 0)
+        action_layout.setSpacing(8)
+        action_layout.addStretch()
+        self.btn_preview = QPushButton("区間を再生")
+        self.btn_preview.setIcon(self.style().standardIcon(QStyle.SP_MediaPlay))
+        self.btn_preview.setAccessibleName(
+            f"{format_seconds(start_time)}から{format_seconds(end_time)}の"
+            f"{label}の単色候補を再生"
+        )
+        self.btn_preview.setToolTip("この候補区間だけをプレビュー再生します")
+        self.btn_preview.clicked.connect(
+            lambda: self.preview_requested.emit(self.start_time, self.end_time)
+        )
+        action_layout.addWidget(self.btn_preview)
+
+        self.trim_check = QCheckBox("トリミング")
+        self.trim_check.setChecked(True)
+        self.trim_check.setAccessibleName(
+            f"{format_seconds(start_time)}から{format_seconds(end_time)}の"
+            f"{label}の単色候補をトリミング対象にする"
+        )
+        action_layout.addWidget(self.trim_check)
+        layout.addLayout(action_layout)
 
 
 class ClipRow(QFrame):
@@ -478,6 +535,9 @@ class ClipListWidget(QWidget):
     date_detect_cancel_requested = Signal()
     media_signal_requested = Signal()
     media_signal_cancel_requested = Signal()
+    blank_preview_requested = Signal(float, float)
+    blank_trim_confirmed = Signal(list)
+    blank_trim_cancelled = Signal()
     edit_started = Signal()
     job_changed = Signal()
 
@@ -486,6 +546,8 @@ class ClipListWidget(QWidget):
         self.current_job: Optional[VideoJob] = None
         self._clip_rows: list[ClipRow] = []
         self._clip_rows_by_scene_index: dict[int, ClipRow] = {}
+        self._blank_candidate_rows: list[BlankCandidateRow] = []
+        self._blank_review_segments: list[tuple[float, float, str]] = []
         self._exporting = False
         self._export_cancelling = False
         self._merge_mode = False
@@ -717,6 +779,44 @@ class ClipListWidget(QWidget):
         finish_layout.insertWidget(0, self.review_bar)
         layout.addWidget(self.finish_panel)
 
+        self.blank_review_bar = QFrame()
+        self.blank_review_bar.setObjectName("blankReviewBar")
+        self.blank_review_bar.setStyleSheet(
+            "QFrame#blankReviewBar { background-color: #3b2424; "
+            "border: 1px solid #7f4747; border-radius: 4px; }"
+        )
+        blank_review_layout = QVBoxLayout(self.blank_review_bar)
+        blank_review_layout.setContentsMargins(8, 6, 8, 6)
+        blank_review_layout.setSpacing(4)
+        self.blank_review_summary = QLabel()
+        self.blank_review_summary.setStyleSheet(
+            "font-weight: bold; color: #ffd2d2;"
+        )
+        blank_review_layout.addWidget(self.blank_review_summary)
+        self.blank_review_hint = QLabel(
+            "赤い候補を再生し、残したい区間は「トリミング」のチェックを外してください"
+        )
+        self.blank_review_hint.setWordWrap(True)
+        self.blank_review_hint.setStyleSheet("font-size: 10px; color: #e8b8b8;")
+        blank_review_layout.addWidget(self.blank_review_hint)
+        blank_action_layout = QHBoxLayout()
+        blank_action_layout.setContentsMargins(0, 0, 0, 0)
+        blank_action_layout.addStretch()
+        self.btn_keep_blank_candidates = QPushButton("すべて残す")
+        self.btn_keep_blank_candidates.clicked.connect(
+            self._cancel_blank_candidates
+        )
+        blank_action_layout.addWidget(self.btn_keep_blank_candidates)
+        self.btn_trim_blank_candidates = QPushButton("候補をトリミング")
+        self.btn_trim_blank_candidates.setObjectName("btn_export")
+        self.btn_trim_blank_candidates.clicked.connect(
+            self._confirm_blank_candidates
+        )
+        blank_action_layout.addWidget(self.btn_trim_blank_candidates)
+        blank_review_layout.addLayout(blank_action_layout)
+        layout.addWidget(self.blank_review_bar)
+        self.blank_review_bar.hide()
+
         # スクロール可能なクリップリスト
         self.scroll_area = QScrollArea()
         self.scroll_area.setWidgetResizable(True)
@@ -764,6 +864,7 @@ class ClipListWidget(QWidget):
     def _is_busy(self) -> bool:
         return (
             self._blank_detecting
+            or bool(self._blank_review_segments)
             or self._date_detecting
             or self._signal_analyzing
             or self._exporting
@@ -840,6 +941,8 @@ class ClipListWidget(QWidget):
     def set_job(self, job: VideoJob):
         """ジョブを設定してクリップ一覧を構築"""
         keep_finish_open = self.current_job is job and self._finish_expanded
+        if self.current_job is not job:
+            self._clear_blank_candidate_state()
         self.current_job = job
         self._merge_mode = False
         self.btn_merge_mode.setChecked(False)
@@ -871,6 +974,7 @@ class ClipListWidget(QWidget):
 
     def clear(self):
         """クリップ一覧を空にする"""
+        self._clear_blank_candidate_state()
         self.current_job = None
         self._exporting = False
         self._merge_mode = False
@@ -884,6 +988,10 @@ class ClipListWidget(QWidget):
             row.deleteLater()
         self._clip_rows.clear()
         self._clip_rows_by_scene_index.clear()
+        for row in self._blank_candidate_rows:
+            row.setParent(None)
+            row.deleteLater()
+        self._blank_candidate_rows.clear()
         self.event_name_edit.blockSignals(True)
         self.date_edit.blockSignals(True)
         self.event_name_edit.clear()
@@ -905,6 +1013,10 @@ class ClipListWidget(QWidget):
             row.deleteLater()
         self._clip_rows.clear()
         self._clip_rows_by_scene_index.clear()
+        for row in self._blank_candidate_rows:
+            row.setParent(None)
+            row.deleteLater()
+        self._blank_candidate_rows.clear()
 
         # stretchを除去して再追加
         while self.scroll_layout.count():
@@ -919,20 +1031,37 @@ class ClipListWidget(QWidget):
                 scene for scene in scenes
                 if pending_review_issues(self.current_job, scene)
             ]
-        for scene in scenes:
-            row = ClipRow(scene, self.current_job)
-            row.preview_requested.connect(self.clip_preview_requested.emit)
-            row.edit_started.connect(self.edit_started.emit)
-            row.keep_changed.connect(self._on_individual_keep_changed)
-            row.sensitive_changed.connect(self._on_individual_setting_changed)
-            row.filename_changed.connect(self._on_individual_setting_changed)
-            row.date_changed.connect(self._on_individual_date_changed)
-            row.selection_changed.connect(self._on_selection_changed)
-            row.review_acknowledged.connect(self._on_review_acknowledged)
-            row.set_merge_mode(self._merge_mode)
-            row.set_finish_mode(self._finish_expanded)
-            self._clip_rows.append(row)
-            self._clip_rows_by_scene_index[scene.index] = row
+        display_items = [(scene.start_time, 0, scene) for scene in scenes]
+        display_items.extend(
+            (start, 1, (start, end, label))
+            for start, end, label in self._blank_review_segments
+        )
+        for _start, item_type, item in sorted(
+            display_items, key=lambda value: value[:2]
+        ):
+            if item_type == 0:
+                scene = item
+                row = ClipRow(scene, self.current_job)
+                row.preview_requested.connect(self.clip_preview_requested.emit)
+                row.edit_started.connect(self.edit_started.emit)
+                row.keep_changed.connect(self._on_individual_keep_changed)
+                row.sensitive_changed.connect(self._on_individual_setting_changed)
+                row.filename_changed.connect(self._on_individual_setting_changed)
+                row.date_changed.connect(self._on_individual_date_changed)
+                row.selection_changed.connect(self._on_selection_changed)
+                row.review_acknowledged.connect(self._on_review_acknowledged)
+                row.set_merge_mode(self._merge_mode)
+                row.set_finish_mode(self._finish_expanded)
+                self._clip_rows.append(row)
+                self._clip_rows_by_scene_index[scene.index] = row
+            else:
+                start, end, label = item
+                row = BlankCandidateRow(start, end, label)
+                row.preview_requested.connect(self.blank_preview_requested.emit)
+                row.trim_check.stateChanged.connect(
+                    self._sync_blank_candidate_actions
+                )
+                self._blank_candidate_rows.append(row)
             self.scroll_layout.addWidget(row)
 
         self.scroll_layout.addStretch()
@@ -1145,6 +1274,55 @@ class ClipListWidget(QWidget):
         """単色区間の検出中は、クリップ編集と仕上げ操作を無効にする。"""
         self._blank_detecting = detecting
         self._update_action_state()
+
+    def show_blank_candidates(self, segments: list[tuple[float, float, str]]):
+        """単色候補を確定前の一時行としてクリップ一覧へ表示する。"""
+        self._blank_review_segments = list(segments)
+        total_seconds = sum(end - start for start, end, _label in segments)
+        self.blank_review_summary.setText(
+            f"単色候補 {len(segments)}区間（合計 {format_seconds(total_seconds)}）"
+        )
+        self.blank_review_bar.setVisible(bool(segments))
+        self.refresh_clips()
+        self._sync_blank_candidate_actions()
+
+    def _sync_blank_candidate_actions(self):
+        selected_count = sum(
+            row.trim_check.isChecked() for row in self._blank_candidate_rows
+        )
+        self.btn_trim_blank_candidates.setText(
+            f"選択{selected_count}件をトリミング"
+        )
+        self.btn_trim_blank_candidates.setEnabled(selected_count > 0)
+
+    def clear_blank_candidates(self):
+        """確定前の単色候補表示を閉じる。"""
+        if not self._blank_review_segments:
+            return
+        self._clear_blank_candidate_state()
+        if self.current_job:
+            self.refresh_clips()
+
+    def _clear_blank_candidate_state(self):
+        self._blank_review_segments = []
+        self.blank_review_bar.hide()
+
+    def _confirm_blank_candidates(self):
+        segments = [
+            (row.start_time, row.end_time, row.label)
+            for row in self._blank_candidate_rows
+            if row.trim_check.isChecked()
+        ]
+        if not segments:
+            return
+        self.clear_blank_candidates()
+        self.blank_trim_confirmed.emit(segments)
+
+    def _cancel_blank_candidates(self):
+        if not self._blank_review_segments:
+            return
+        self.clear_blank_candidates()
+        self.blank_trim_cancelled.emit()
 
     def _on_date_detect_clicked(self):
         if self._date_detecting:

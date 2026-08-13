@@ -22,7 +22,6 @@ from app.ui.queue_widget import QueueWidget
 from app.ui.clip_list_widget import ClipListWidget
 from app.ui.log_widget import LogWidget
 from app.ui.merge_dialog import MergeProposalDialog
-from app.ui.blank_dialog import BlankCutDialog
 from app.ui.batch_progress_dialog import BatchProgressDialog
 from app.ui.bulk_metadata_dialog import BulkMetadataDialog
 from app.ui.preview_widget import PreviewWidget
@@ -238,6 +237,15 @@ class MainWindow(QMainWindow):
 
         # クリップリスト → プレビュー
         self.clip_list_widget.clip_preview_requested.connect(self._on_clip_preview)
+        self.clip_list_widget.blank_preview_requested.connect(
+            self._on_blank_preview_requested
+        )
+        self.clip_list_widget.blank_trim_confirmed.connect(
+            self._on_blank_trim_confirmed
+        )
+        self.clip_list_widget.blank_trim_cancelled.connect(
+            self._on_blank_trim_cancelled
+        )
 
         # クリップリスト → 書き出し
         self.clip_list_widget.export_requested.connect(self._on_export_requested)
@@ -948,6 +956,20 @@ class MainWindow(QMainWindow):
         """クリップのプレビュー再生"""
         self.preview_widget.play_from(start_time)
 
+    def _on_blank_preview_requested(self, start_time: float, end_time: float):
+        """単色候補だけを再生し、候補終端で停止する。"""
+        self.preview_widget.play_range(start_time, end_time)
+
+    def _on_blank_trim_confirmed(self, segments: list):
+        """一覧で確認した単色候補をトリミング対象へ反映する。"""
+        self.preview_widget.pause()
+        self._apply_blank_segments(segments)
+
+    def _on_blank_trim_cancelled(self):
+        """一覧の単色候補をすべて残す。"""
+        self.preview_widget.pause()
+        self.log_widget.append_log("単色候補はトリミングせず残しました")
+
     def _on_merge_scenes_requested(self, scene_indexes: List[int]):
         """選択された連続シーンを1つに結合"""
         if not self.current_job or len(scene_indexes) < 2:
@@ -1073,6 +1095,7 @@ class MainWindow(QMainWindow):
             return False
 
         self._pending_blank_segments = None
+        self.clip_list_widget.clear_blank_candidates()
         self.log_widget.append_log("トリミング対象の単色区間を検出中...")
         self.log_widget.set_status("単色区間を検出中")
         self.clip_list_widget.set_blank_detecting(True)
@@ -1104,7 +1127,7 @@ class MainWindow(QMainWindow):
         self._pending_blank_segments = segments
         if segments:
             self.log_widget.append_log(
-                f"単色区間を {len(segments)} 件検出しました。確認画面を開きます"
+                f"単色区間を {len(segments)} 件検出しました。右の一覧で確認できます"
             )
         else:
             self.log_widget.append_log("トリミング対象の単色区間は見つかりませんでした")
@@ -1121,10 +1144,6 @@ class MainWindow(QMainWindow):
             if min(duration, e) - max(0.0, s) > 0.05
         ]
         if not segs:
-            return
-
-        dialog = BlankCutDialog(segs, self)
-        if dialog.exec() != BlankCutDialog.Accepted:
             return
 
         # 境界追加と除外指定を1回のUndoで戻せるよう、操作全体の前を保存する。
@@ -1175,9 +1194,9 @@ class MainWindow(QMainWindow):
         segments = self._pending_blank_segments
         self._pending_blank_segments = None
 
-        # ユーザーが補正ツールから選んだ処理だけを完了し、別の提案へ連鎖しない。
+        # モードレスな一覧へ候補を出し、再生確認後にユーザーが確定する。
         if segments:
-            self._apply_blank_segments(segments)
+            self.clip_list_widget.show_blank_candidates(segments)
 
     def _protected_boundaries_from_clip_state(self) -> List[float]:
         """公開可否や出力設定が変わる境界を自動結合から保護する。"""
