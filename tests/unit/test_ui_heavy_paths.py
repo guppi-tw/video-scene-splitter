@@ -262,6 +262,28 @@ def test_clip_editor_hides_low_frequency_controls_until_needed(tmp_path):
     widget.close()
 
 
+def test_clip_editor_keeps_hour_long_time_range_visible_at_minimum_width(tmp_path):
+    _app()
+    source = tmp_path / "hour-long.mp4"
+    source.touch()
+    job = VideoJob(
+        id=1,
+        source_path=source,
+        status=JobStatus.REVIEW,
+        scenes=[Scene(index=62, start_time=3702.0, end_time=3737.0)],
+    )
+    widget = ClipListWidget()
+    widget.set_job(job)
+    widget.resize(340, 600)
+    widget.show()
+    QApplication.processEvents()
+    time_label = widget._clip_rows[0].time_label
+
+    assert time_label.text() == "#62  1:01:42–1:02:17"
+    assert time_label.width() >= time_label.sizeHint().width()
+    widget.close()
+
+
 def test_clip_editor_guides_user_through_only_pending_review_items(tmp_path):
     _app()
     source = tmp_path / "review-guide.mp4"

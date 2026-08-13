@@ -148,8 +148,7 @@ class ClipRow(QFrame):
         )
         self.time_label = QLabel(time_text)
         self.time_label.setStyleSheet("font-size: 11px; color: #ccc;")
-        self.time_label.setMinimumWidth(80)
-        self.time_label.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
+        self.time_label.setSizePolicy(QSizePolicy.Minimum, QSizePolicy.Preferred)
         info_layout.addWidget(self.time_label)
 
         # 生成名は通常テキスト表示。ダブルクリック時だけ入力欄へ切り替える。
